@@ -35,29 +35,28 @@ namespace lib {
         struct WiFiEventStationModeConnected {};
         struct WiFiEventStationModeGotIP {};
         struct WiFiEventStationModeDisconnected {};
-        class WiFiEventHandler {
+        class WiFiEventHandlerOpaque {
             private:
-                WiFiClass* _WiFi;
+                WiFiClass& _WiFi;
                 wifi_event_id_t _id;
             public:
-                WiFiEventHandler(WiFiClass& _WiFi, wifi_event_id_t _id) : _WiFi(&_WiFi), _id(_id) {}
-                WiFiEventHandler() : _WiFi(nullptr), _id(0) {}
-                virtual ~WiFiEventHandler() {
-                    if (_WiFi)
-                        _WiFi->removeEvent(_id);
+                WiFiEventHandlerOpaque(WiFiClass& _WiFi, wifi_event_id_t _id) : _WiFi(_WiFi), _id(_id) {}
+                virtual ~WiFiEventHandlerOpaque() {
+                    _WiFi.removeEvent(_id);
                 }
         };
+        using WiFiEventHandler = std::shared_ptr<WiFiEventHandlerOpaque>;
         inline WiFiEventHandler onStationModeConnected(WiFiClass& _WiFi, std::function<void(const WiFiEventStationModeConnected&)> f) {
             auto id = _WiFi.onEvent([f] (arduino_event_id_t event, arduino_event_info_t info) { f({}); }, ARDUINO_EVENT_WIFI_STA_CONNECTED);
-            return WiFiEventHandler(_WiFi, id);
+            return std::make_shared<WiFiEventHandlerOpaque>(_WiFi, id);
         }
         inline WiFiEventHandler onStationModeGotIP(WiFiClass& _WiFi, std::function<void(const WiFiEventStationModeGotIP&)> f) {
             auto id = _WiFi.onEvent([f] (arduino_event_id_t event, arduino_event_info_t info) { f({}); }, ARDUINO_EVENT_WIFI_STA_GOT_IP);
-            return WiFiEventHandler(_WiFi, id);
+            return std::make_shared<WiFiEventHandlerOpaque>(_WiFi, id);
         }
         inline WiFiEventHandler onStationModeDisconnected(WiFiClass& _WiFi, std::function<void(const WiFiEventStationModeDisconnected&)> f) {
             auto id = _WiFi.onEvent([f] (arduino_event_id_t event, arduino_event_info_t info) { f({}); }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-            return WiFiEventHandler(_WiFi, id);
+            return std::make_shared<WiFiEventHandlerOpaque>(_WiFi, id);
         }
     #else
         using ::WiFiEventStationModeConnected;
