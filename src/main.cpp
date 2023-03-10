@@ -8,9 +8,7 @@
 #include <WiFiUdp.h>
 #include <EEPROM.h>
 
-// For std::size
-#include <array>
-
+#include <polyfill.hpp>
 
 #if defined(MODE_CLIENT) ^ defined(MODE_SERVER) == 0
   #error "Either MASTER or SLAVE must be specified"
@@ -102,20 +100,20 @@ bool WiFiConnected = false;
 
 void reconnectWiFi() {
   IPAddress MY_IP = settings.my_ip;
-  if(MY_IP.isSet()) {
+  if(lib::isSet(MY_IP)) {
     WiFi.config(MY_IP, settings.gateway, settings.mask);
   }
   WiFi.begin(settings.ssid, settings.pass);
 }
 
-void WiFiStationConnected(const WiFiEventStationModeConnected& event){
+void WiFiStationConnected(const lib::WiFiEventStationModeConnected& event){
   Serial.println(F("Connected to AP successfully!"));
   Serial.print(F("AP signal: "));
   Serial.print(WiFi.RSSI());
   Serial.println(F(" dbm"));
 }
 
-void WiFiGotIP(const WiFiEventStationModeGotIP& event){
+void WiFiGotIP(const lib::WiFiEventStationModeGotIP& event){
   WiFiConnected = true;
   Serial.print(F("Local IP address: "));
   Serial.println(WiFi.localIP());
@@ -125,13 +123,13 @@ void WiFiGotIP(const WiFiEventStationModeGotIP& event){
   Serial.println(WiFi.gatewayIP());
 }
 
-void WiFiStationDisconnected(const WiFiEventStationModeDisconnected& event){
+void WiFiStationDisconnected(const lib::WiFiEventStationModeDisconnected& event){
   WiFiConnected = false;
   Serial.println(F("Disconnected from WiFi access point"));
   reconnectWiFi();
 }
 
-WiFiEventHandler hSMConnected, hSMGotIP, hSMDisconnected;
+lib::WiFiEventHandler hSMConnected, hSMGotIP, hSMDisconnected;
 
 void setup() {
   WiFi.disconnect(true);
@@ -154,9 +152,9 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
-  hSMConnected = WiFi.onStationModeConnected(WiFiStationConnected);
-  hSMGotIP = WiFi.onStationModeGotIP(WiFiGotIP);
-  hSMDisconnected = WiFi.onStationModeDisconnected(WiFiStationDisconnected);
+  hSMConnected = lib::onStationModeConnected(WiFi, WiFiStationConnected);
+  hSMGotIP = lib::onStationModeGotIP(WiFi, WiFiGotIP);
+  hSMDisconnected = lib::onStationModeDisconnected(WiFi, WiFiStationDisconnected);
   reconnectWiFi();
 
   #ifdef MODE_SERVER
@@ -184,6 +182,7 @@ struct __attribute__((packed)) MyPkt {
 };
 
 #ifdef MODE_SERVER
+  bool setnewrow = true;
   char pkt_buff[200];
 
   void parsePacket() {
@@ -218,7 +217,7 @@ struct __attribute__((packed)) MyPkt {
       return;
     }
 
-    if (pkt->idx >= std::size(PIN_OUT)) {
+    if (pkt->idx >= lib::size(PIN_OUT)) {
       Serial.print(F("Invalid target: "));
       Serial.println(pkt->idx);
       return;
@@ -228,7 +227,8 @@ struct __attribute__((packed)) MyPkt {
     digitalWrite(PIN_OUT[pkt->idx], pkt->value ? HIGH : LOW);
     bool new_state = digitalRead(PIN_OUT[pkt->idx]);
     if (prev_state != new_state) {
-      Serial.println();
+      if (setnewrow)
+        Serial.println();
       Serial.print(F("Change state for "));
       Serial.print(pkt->idx);
       if (new_state)
@@ -238,9 +238,12 @@ struct __attribute__((packed)) MyPkt {
       Serial.print(source_ip);
       Serial.print(F(":"));
       Serial.println(source_port);
+      setnewrow = false;
     } else {
-      if (show_received)
+      if (show_received) {
         Serial.print(pkt->idx);
+        setnewrow = true;
+      }
     }
   }
 #endif
@@ -272,7 +275,8 @@ String serialReadLine() {
 void serialReadIP(uint8_t ip[4]) {
   IPAddress ip_obj;
   ip_obj.fromString(serialReadLine());
-  memcpy(ip, &ip_obj.v4(), 4);
+  const auto v4 = lib::v4(ip_obj);
+  memcpy(ip, &v4, 4);
 }
 
 void readSettings() {
@@ -303,7 +307,7 @@ void readSettings() {
     serialReadIP(settings.my_ip);
   #endif
 
-  if (IPAddress(settings.my_ip).isSet()) {
+  if (lib::isSet(IPAddress(settings.my_ip))) {
     Serial.print(F("Gateway: "));
     serialReadIP(settings.gateway);
 
