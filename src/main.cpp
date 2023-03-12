@@ -157,23 +157,23 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
   const int PIN_NET = D4;
 #endif
 
+#include <defSettings.hpp>
 #define EE_MAGIC 0xDF01
-#define DEF_SERVER_IP { 192, 168, 1, 50 }
 struct __attribute__((packed)) MySettings {
-  uint16_t magic = 0xDF01;
-  char ssid[64] = "";
-  char pass[64] = "";
-  uint8_t server_ip[4] = DEF_SERVER_IP;
+  uint16_t magic = EE_MAGIC;
+  char ssid[64] = DEFSETTINGS_SSID;
+  char pass[64] = DEFSETTINGS_PASS;
+  uint8_t server_ip[4] = DEFSETTINGS_SERVER_IP;
   uint16_t server_port = 5000;
   uint8_t local_ip[4] =
   #ifdef MODE_SERVER
-    DEF_SERVER_IP
+    DEFSETTINGS_SERVER_IP
   #else
     { 0, 0, 0, 0 }
   #endif
   ;
-  uint8_t gateway[4] = { 192, 168, 1, 1 };
-  uint8_t mask[4] = { 255, 255, 255, 0 };
+  uint8_t gateway[4] = DEFSETTINGS_GATEWAY_IP;
+  uint8_t mask[4] = DEFSETTINGS_MASK_IP;
 
   // Client only
   unsigned long send_interval = 250UL;
@@ -237,7 +237,7 @@ bool WiFiConnected = false;
 
 [[noreturn]] void askSettings();
 void reconnectWiFi() {
-  if (settings.ssid == "") {
+  if (settings.ssid[0] == '\0') {
     Serial.println(F("Empty SSID, reenter settings"));
     askSettings();
   }
