@@ -14,6 +14,104 @@
   #error "Either MASTER or SLAVE must be specified"
 #endif
 
+using millis_t = unsigned long;
+
+#ifdef MODE_SERVER
+
+  #include <map>
+
+  struct IPPort : public Printable {
+    public:
+      uint32_t ip;
+      uint16_t port;
+
+      operator uint64_t() const {
+        uint64_t res = ip;
+        res <<= 32;
+        res |= port;
+        return res;
+      }
+
+      IPPort(IPAddress ip, uint16_t port) : ip(ip), port(port) {}
+
+      virtual size_t printTo(Print& p) const {
+        size_t res = p.print(ip);
+        res += p.print(':');
+        res += p.print(port);
+        return res;
+      }
+  };
+
+  std::map<IPPort, millis_t> track_last_received;
+
+  bool track_received(const IPPort& ipp, millis_t time) {
+    //auto& [ _, inserted ]
+    const auto& p = track_last_received.emplace(ipp, time);
+    if (p.second) {
+      // Connected
+      Serial.print(F("Connected client: "));
+      Serial.println(p.first->first);
+    }
+    return p.second;
+  }
+
+/*
+  template<typename _Container, typename _Pred>
+  // _Pred = std::function<bool(const typename _Container::value_type&)>
+  void remove_if(_Container& container, _Pred pred) {
+    container.erase(
+      std::remove_if(container.begin(), container.end(),
+        pred
+      ),
+      container.end()
+    );
+  }
+*/
+
+  int track_older(millis_t time, unsigned int expire) {
+    //auto& [ k, v ] deconstruction not allowed
+    //std::erase_if() is EXPERIMENTAL!
+
+    /*
+    // This errors out cause of move assignment of pairs???
+    int expire_count = 0;
+    remove_if(
+      track_last_received,
+      [ &expire_count, time, expire ] (const std::map<IPPort, millis_t>::value_type& p) {
+        if (time - p.second > expire) {
+          expire_count += 1;
+          // Disconnected
+          Serial.print(F("Disconnected client: "));
+          Serial.println(p.first);
+
+          return true;
+        }
+        return false;
+      }
+    );
+
+    return expire_count;
+    */
+
+    // Taken from https://en.cppreference.com/w/cpp/container/map/erase_if
+    int expire_count = 0;
+    for (auto it = track_last_received.begin(), last = track_last_received.end(); it != last; ) {
+      if (time - it->second > expire) { // Expire condition
+        expire_count += 1;
+        it = track_last_received.erase(it);
+
+        // Disconnected
+        Serial.print(F("Disconnected client: "));
+        Serial.println(it->first);
+      } else {
+        ++it;
+      }
+    }
+    return expire_count;
+  }
+
+#endif
+
 // esp32 PINOUT
 /*
 0 = bootloader
@@ -123,7 +221,11 @@ void printSettings(bool showPass) {
   Serial.print(F("Gateway IP Address: "));
   Serial.println(IPAddress(settings.gateway));
 
-  Serial.print(F("Send Interval: "));
+  #ifdef MODE_SERVER
+    Serial.print(F("Expire Interval: "));
+  #else
+    Serial.print(F("Send Interval: "));
+  #endif
   Serial.println(settings.send_interval);
 
   Serial.print(F("Target Index: "));
@@ -271,6 +373,8 @@ struct __attribute__((packed)) MyPkt {
       return;
     }
 
+    track_received({ .ip = source_ip, .port = source_port }, millis());
+
     bool prev_state = digitalRead(PIN_OUT[pkt->idx]);
     digitalWrite(PIN_OUT[pkt->idx], pkt->value ? HIGH : LOW);
     bool new_state = digitalRead(PIN_OUT[pkt->idx]);
@@ -357,14 +461,17 @@ void readSettings() {
     serialReadIP(settings.gateway);
   }
 
-  #ifdef MODE_CLIENT
+  #ifdef MODE_SERVER
+    Serial.print(F("Expire Interval: "));
+  #else
     Serial.print(F("Send Interval: "));
-    settings.send_interval = serialReadLine().toInt();
+  #endif
+  settings.send_interval = serialReadLine().toInt();
 
+  #ifdef MODE_CLIENT  
     Serial.print(F("Target Index: "));
     settings.target_idx = serialReadLine().toInt();
   #else
-    settings.send_interval = _def.send_interval;
     settings.target_idx = _def.target_idx;
   #endif
 
@@ -404,6 +511,9 @@ void loop() {
       Serial.println(F(" dbm"));
     }
   }
+  #ifdef MODE_SERVER
+    track_older(millis(), settings.send_interval); // Could be done less frequently
+  #endif
   if(WiFiConnected) {
     #ifdef MODE_SERVER
       parsePacket();
