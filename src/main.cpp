@@ -235,7 +235,12 @@ void printSettings(bool showPass) {
 WiFiUDP udp;
 bool WiFiConnected = false;
 
+[[noreturn]] void askSettings();
 void reconnectWiFi() {
+  if (settings.ssid == "") {
+    Serial.println(F("Empty SSID, reenter settings"));
+    askSettings();
+  }
   IPAddress LOCAL_IP = settings.local_ip;
   if(lib::isSet(LOCAL_IP)) {
     WiFi.config(LOCAL_IP, settings.gateway, settings.mask);
