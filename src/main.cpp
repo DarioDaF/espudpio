@@ -114,6 +114,8 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
 #else
   #define VALUE_PIN_HIGH 0x00
   #define VALUE_PIN_LOW 0xFF
+  #define STATE_OPEN VALUE_PIN_HIGH
+  #define STATE_CLOSE VALUE_PIN_LOW
   #ifdef ESP32
     const int PIN_IN1 = 13;
   #else
@@ -605,10 +607,10 @@ void loop() {
         pkt.value = digitalRead(PIN_IN1) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
         if (pkt.value != old_state) {
           apply_new_row();
-          if(pkt.value) {
-            Serial.println(F("Changed STATE to Close!"));
+          if(pkt.value == STATE_CLOSE) {
+            Serial.println(F("Changed swich state to closed"));
           } else {
-            Serial.println(F("Changed STATE to Open!"));
+            Serial.println(F("Changed swich state to open"));
           }
           old_state = pkt.value;
         } 
