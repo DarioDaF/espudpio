@@ -15,6 +15,44 @@ namespace lib {
     #else
         using std::size;
     #endif
+    class PrintBuff : public Print {
+        private:
+            char* buff;
+            size_t pos;
+            size_t buffSize;
+            bool myBuff;
+        public:
+            PrintBuff(size_t buffSize, char* buff = nullptr) : buff(buff), pos(0), buffSize(buffSize), myBuff(false) {
+                if (this->buff == nullptr) {
+                    this->myBuff = true;
+                    this->buff = new char[this->buffSize];
+                }
+            }
+            virtual ~PrintBuff() {
+                if (this->myBuff) {
+                    delete[] this->buff;
+                    this->buff = nullptr;
+                    this->buffSize = 0;
+                    this->myBuff = false;
+                }
+            }
+            size_t getPos() const { return this->pos; }
+            const char* getBuff() const { return this->buff; }
+            virtual size_t write(uint8_t x) override {
+                //return this->write(&x, 1);
+                if (this->pos < this->buffSize) {
+                    this->buff[this->pos++] = x;
+                    return 1;
+                }
+                return 0;
+            }
+            virtual size_t write(const uint8_t *buffer, size_t size) override {
+                size_t toCopy = min(size, this->buffSize - this->pos);
+                memcpy(&this->buff[this->pos], buffer, toCopy);
+                this->pos += toCopy;
+                return toCopy;
+            }
+    };
 
     // IPAddress
     inline const uint32_t v4(const IPAddress& ip) {

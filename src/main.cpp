@@ -16,33 +16,34 @@
 
 using millis_t = unsigned long;
 
+struct IPPort : public Printable {
+  
+  IPAddress ip;
+  uint16_t port;
+
+  operator uint64_t() const {
+    uint64_t res = (uint32_t)ip;
+    res <<= 32;
+    res |= port;
+    return res;
+  }
+
+  IPPort(IPAddress ip, uint16_t port) : ip(ip), port(port) {}
+  IPPort() : ip(INADDR_NONE), port(0) {}
+
+  virtual size_t printTo(Print& p) const {
+    size_t res = p.print(ip);
+    res += p.print(':');
+    res += p.print(port);
+    return res;
+  }
+};
+
 #ifdef MODE_SERVER
 
   void apply_new_row();
 
   #include <map>
-
-  struct IPPort : public Printable {
-    
-    IPAddress ip;
-    uint16_t port;
-
-    operator uint64_t() const {
-      uint64_t res = (uint32_t)ip;
-      res <<= 32;
-      res |= port;
-      return res;
-    }
-
-    IPPort(IPAddress ip, uint16_t port) : ip(ip), port(port) {}
-
-    virtual size_t printTo(Print& p) const {
-      size_t res = p.print(ip);
-      res += p.print(':');
-      res += p.print(port);
-      return res;
-    }
-  };
 
   std::map<IPPort, millis_t> track_last_received;
 
@@ -169,47 +170,47 @@ void apply_new_row() {
   }
 }
 
-void printSettings(bool showPass) {
+void printSettings(Print& out, bool showPass) {
   #ifdef MODE_SERVER
-    Serial.println(F("[SERVER MODE]"));
+    out.println(F("[SERVER MODE]"));
   #else
-    Serial.println(F("[CLIENT MODE]"));
+    out.println(F("[CLIENT MODE]"));
   #endif
-  Serial.print(F("Network Name (SSID): "));
-  Serial.println(settings.ssid);
+  out.print(F("Network Name (SSID): "));
+  out.println(settings.ssid);
 
-  Serial.print(F("Password: "));
+  out.print(F("Password: "));
   if (showPass) {
-    Serial.println(settings.pass);
+    out.println(settings.pass);
   } else {
-    Serial.println(F("***"));
+    out.println(F("***"));
   }
 
-  Serial.print(F("Server IP Address: "));
-  Serial.println(IPAddress(settings.server_ip));
+  out.print(F("Server IP Address: "));
+  out.println(IPAddress(settings.server_ip));
 
-  Serial.print(F("Server Port: "));
-  Serial.println(settings.server_port);
+  out.print(F("Server Port: "));
+  out.println(settings.server_port);
 
-  Serial.print(F("Local IP Address: "));
-  Serial.println(IPAddress(settings.local_ip));
+  out.print(F("Local IP Address: "));
+  out.println(IPAddress(settings.local_ip));
 
-  Serial.print(F("Subnet Mask: "));
-  Serial.println(IPAddress(settings.mask));
+  out.print(F("Subnet Mask: "));
+  out.println(IPAddress(settings.mask));
 
-  Serial.print(F("Gateway IP Address: "));
-  Serial.println(IPAddress(settings.gateway));
+  out.print(F("Gateway IP Address: "));
+  out.println(IPAddress(settings.gateway));
 
   #ifdef MODE_SERVER
-    Serial.print(F("Expire Interval: "));
+    out.print(F("Expire Interval: "));
   #else
-    Serial.print(F("Send Interval: "));
+    out.print(F("Send Interval: "));
   #endif
-  Serial.println(settings.send_interval);
+  out.println(settings.send_interval);
 
   #ifndef MODE_SERVER
-    Serial.print(F("Target Index: "));
-    Serial.println(settings.target_idx);
+    out.print(F("Target Index: "));
+    out.println(settings.target_idx);
   #endif
 }
 
@@ -280,7 +281,7 @@ void setup() {
     //settings = {};
     settings = settings_s();
   }
-  printSettings(false);
+  printSettings(Serial, false);
   
   Serial.println();
   Serial.println(F("Wait for WiFi..."));
@@ -292,9 +293,7 @@ void setup() {
   hSMDisconnected = lib::onStationModeDisconnected(WiFi, WiFiStationDisconnected);
   reconnectWiFi();
 
-  #ifdef MODE_SERVER
-    udp.begin(settings.server_port);
-  #endif
+  udp.begin(settings.server_port); // Server for both for general info
 
   // Prepare pins
   #ifdef MODE_SERVER
@@ -315,34 +314,41 @@ struct __attribute__((packed)) pkt_s {
   uint8_t value;
 };
 
+#define MAX_UDP_PACKET 200
+size_t pkt_len = 0;
+char pkt_buff[MAX_UDP_PACKET];
+IPPort pkt_source;
+
+bool execQuery(char query, Print& out);
+bool parseQueryPacket() {
+  if (pkt_len != 2)
+    return false;
+  if (pkt_buff[0] != '?')
+    return false;
+
+  char query = pkt_buff[1];
+
+  lib::PrintBuff pbuff(MAX_UDP_PACKET);
+  if (!execQuery(query, pbuff)) {
+    pbuff.print(F("Unknown query: "));
+    pbuff.println(query);
+    // Accept them anyway cause they are "valid" but unknown!!!
+  }
+
+  udp.beginPacket(pkt_source.ip, pkt_source.port);
+  lib::writeRaw(udp, pbuff.getBuff(), pbuff.getPos());
+  udp.endPacket();
+
+  return true;
+}
+
 #ifdef MODE_SERVER
-  char pkt_buff[200];
-
-  void parsePacket() {
-    size_t pkt_len = udp.parsePacket();
-    
-    if (pkt_len == 0)
-      return; // No packet received
-
-    if(pkt_len > sizeof(pkt_buff)) {
-      // Packet too long
-      apply_new_row();
-      Serial.print(F("Received a packet too long: "));
-      Serial.println(pkt_len);
-      // If packet is not read parsePacket next will free the buffer anyway
-      return;
-    }
-    
-    // Read the packet
-    udp.read(pkt_buff, pkt_len);
-    IPAddress source_ip = udp.remoteIP();
-    uint16_t source_port = udp.remotePort();
-
+  bool parsePktPacket() {
     if (pkt_len != sizeof(pkt_s)) {
       apply_new_row();
       Serial.print(F("Unknown packet length: "));
       Serial.println(pkt_len);
-      return;
+      return false;
     }
     
     pkt_s* pkt = (pkt_s*)pkt_buff;
@@ -350,17 +356,17 @@ struct __attribute__((packed)) pkt_s {
       apply_new_row();
       Serial.print(F("Invalid version: 0x"));
       Serial.println(pkt->magic, HEX);
-      return;
+      return false;
     }
 
     if (pkt->idx >= lib::size(PIN_OUT)) {
       apply_new_row();
       Serial.print(F("Invalid target: "));
       Serial.println(pkt->idx);
-      return;
+      return false;
     }
 
-    track_received({ source_ip, source_port }, millis());
+    track_received(pkt_source, millis());
 
     bool prev_state = digitalRead(PIN_OUT[pkt->idx]);
     digitalWrite(PIN_OUT[pkt->idx], pkt->value ? HIGH : LOW);
@@ -374,17 +380,50 @@ struct __attribute__((packed)) pkt_s {
       else
         Serial.print(F(" to LOW"));
       Serial.print(F("; command sent by "));
-      Serial.print(source_ip);
-      Serial.print(F(":"));
-      Serial.println(source_port);
+      Serial.println(pkt_source);
     } else {
       if (show_polling) {
         Serial.print(pkt->idx, HEX); //Valido per max 16 elementi 0..f
         need_new_row = true;
       }
     }
+
+    return true;
   }
 #endif
+
+void parsePacket() {
+  pkt_len = udp.parsePacket();
+
+  if (pkt_len == 0)
+    return; // No packet received
+
+  if(pkt_len > sizeof(pkt_buff)) {
+    // Packet too long
+    apply_new_row();
+    Serial.print(F("Received a packet too long: "));
+    Serial.println(pkt_len);
+    // If packet is not read parsePacket next will free the buffer anyway
+    return;
+  }
+
+  // Read the packet
+  pkt_source.ip = udp.remoteIP();
+  pkt_source.port = udp.remotePort();
+  udp.read(pkt_buff, pkt_len);
+
+  bool parsed = false;
+
+  if (!parsed)
+    parsed = parseQueryPacket();
+
+  #ifdef MODE_SERVER
+    if (!parsed)
+      parsed = parsePktPacket();
+  #endif
+
+  pkt_len = 0;
+}
 
 #ifdef MODE_CLIENT
   uint8_t old_state = VALUE_PIN_HIGH;
@@ -463,7 +502,7 @@ void readSettings() {
   #endif
 
   Serial.println();
-  printSettings(true);
+  printSettings(Serial, true);
   Serial.print(F("Save? [N/y]: "));
   s = serialReadLine();
   s.toUpperCase();
@@ -491,38 +530,72 @@ void readSettings() {
   reboot();
 }
 
+bool execQuery(char query, Print& out) {
+  if ((query == 'I') || (query == 'i')) {
+    printSettings(out, false);
+    return true;
+  } else if ((query == 'W') || (query == 'w')) {
+    if(WiFi.isConnected()) {
+      out.print(F("WiFi Signal = "));
+      out.print(WiFi.RSSI());
+      out.println(F(" dbm"));
+    } else {
+      out.println(F("WiFi Signal = <NOT CONNECTED>"));
+    }
+    return true;
+  }
+  #ifdef MODE_SERVER
+    else if ((query == 'C') || (query == 'c')) {
+      out.println(F("Clients connected:"));
+      for (const auto& kv : track_last_received) {
+        out.println(kv.first);
+      }
+      return true;
+    } else if ((query == 'O') || (query == 'o')) {
+      out.print(F("Outputs: [ "));
+      bool first = true;
+      for (const auto& pin : PIN_OUT) {
+        if (first) {
+          first = false;
+        } else {
+          out.print(F(", "));
+        }
+        out.print(digitalRead(pin) ? F("H") : F("L"));
+      }
+      out.println(F(" ]"));
+      return true;
+    }
+  #endif
+  return false;
+}
+
 void loop() {
   yield();
   if (Serial.available()) {
-    char value = Serial.read();
-    if ((value == 'S') || (value == 's')) {
+    char query = Serial.read();
+    apply_new_row();
+    if ((query == 'S') || (query == 's')) {
       udp.stop();
-      apply_new_row();
+      // @TODO: Should also disable rety connection/hooks!!!
       askSettings(); // noreturn
-    } else if ((value == 'I') || (value == 'i')) {
-      apply_new_row();
-      printSettings(false);
-    } else if ((value == 'D') || (value == 'd')) {
+    } else if ((query == 'R') || (query == 'r')) {
+      reboot(); // noreturn
+    } else if ((query == 'D') || (query == 'd')) {
       show_polling = !show_polling;
-    } else if ((value == 'W') || (value == 'w')) {
-      if(WiFi.isConnected()) {
-        apply_new_row();
-        Serial.print(F("WiFi Signal = "));
-        Serial.print(WiFi.RSSI());
-        Serial.println(F(" dbm"));
+    } else {
+      if (!execQuery(query, Serial)) {
+        Serial.print(F("Unknown command: "));
+        Serial.println(query);
       }
-    } else if ((value == 'R') || (value == 'r')) {
-        apply_new_row();
-        reboot(); // noreturn
     }
   }
   #ifdef MODE_SERVER
     track_older(millis(), settings.send_interval); // Could be done less frequently
   #endif
   if(WiFiConnected) {
-    #ifdef MODE_SERVER
-      parsePacket();
-    #else
+    parsePacket();
+
+    #ifdef MODE_CLIENT
       millis_t current_time = millis();
       if (current_time - last_send > settings.send_interval) {
         pkt_s pkt;
