@@ -8,6 +8,7 @@
 #endif
 
 namespace lib {
+    // General use
     #ifdef ESP32
         template<typename T, int N>
         inline int size(T(&)[N]) { return N; }
@@ -15,6 +16,7 @@ namespace lib {
         using std::size;
     #endif
 
+    // IPAddress
     inline const uint32_t v4(const IPAddress& ip) {
         #ifdef ESP32
             return (uint32_t)ip;
@@ -31,6 +33,7 @@ namespace lib {
         #endif
     }
 
+    // WiFi
     #ifdef ESP32
 
         using WiFiDisconnectReason = wifi_err_reason_t;
@@ -113,6 +116,24 @@ namespace lib {
             return _WiFi.onStationModeDisconnected(f);
         }
     #endif
+
+    // UDP
+    template<typename T>
+    inline size_t writeRaw(WiFiUDP& udp, const T* buffer, size_t size) {
+        #ifdef ESP32
+            return udp.write((uint8_t*)(void*)buffer, size);
+        #else
+            return udp.write((char*)(void*)buffer, size);
+        #endif
+    }
+    template<typename T>
+    inline size_t writeT(WiFiUDP& udp, const T* arr, size_t count = 1) {
+        #ifdef ESP32
+            return udp.write((uint8_t*)(void*)arr, sizeof(T) * count);
+        #else
+            return udp.write((char*)(void*)arr, sizeof(T) * count);
+        #endif
+    }
 }
 
 #endif

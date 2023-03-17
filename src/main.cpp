@@ -18,91 +18,58 @@ using millis_t = unsigned long;
 
 #ifdef MODE_SERVER
 
+  void apply_new_row();
+
   #include <map>
 
   struct IPPort : public Printable {
-    public:
-      uint32_t ip;
-      uint16_t port;
+    
+    IPAddress ip;
+    uint16_t port;
 
-      operator uint64_t() const {
-        uint64_t res = ip;
-        res <<= 32;
-        res |= port;
-        return res;
-      }
+    operator uint64_t() const {
+      uint64_t res = (uint32_t)ip;
+      res <<= 32;
+      res |= port;
+      return res;
+    }
 
-      IPPort(IPAddress ip, uint16_t port) : ip(ip), port(port) {}
+    IPPort(IPAddress ip, uint16_t port) : ip(ip), port(port) {}
 
-      virtual size_t printTo(Print& p) const {
-        size_t res = p.print(ip);
-        res += p.print(':');
-        res += p.print(port);
-        return res;
-      }
+    virtual size_t printTo(Print& p) const {
+      size_t res = p.print(ip);
+      res += p.print(':');
+      res += p.print(port);
+      return res;
+    }
   };
 
   std::map<IPPort, millis_t> track_last_received;
 
   bool track_received(const IPPort& ipp, millis_t time) {
-    //auto& [ _, inserted ]
-    const auto& p = track_last_received.emplace(ipp, time);
-    if (p.second) {
+    bool notPresent = track_last_received.find(ipp) == track_last_received.end();
+    track_last_received[ipp] = time;
+    if (notPresent) {
+      apply_new_row();
       // Connected
       Serial.print(F("Connected client: "));
-      Serial.println(p.first->first);
+      Serial.println(ipp);
     }
-    return p.second;
+    return notPresent;
   }
-
-/*
-  template<typename _Container, typename _Pred>
-  // _Pred = std::function<bool(const typename _Container::value_type&)>
-  void remove_if(_Container& container, _Pred pred) {
-    container.erase(
-      std::remove_if(container.begin(), container.end(),
-        pred
-      ),
-      container.end()
-    );
-  }
-*/
 
   int track_older(millis_t time, unsigned int expire) {
-    //auto& [ k, v ] deconstruction not allowed
-    //std::erase_if() is EXPERIMENTAL!
-
-    /*
-    // This errors out cause of move assignment of pairs???
-    int expire_count = 0;
-    remove_if(
-      track_last_received,
-      [ &expire_count, time, expire ] (const std::map<IPPort, millis_t>::value_type& p) {
-        if (time - p.second > expire) {
-          expire_count += 1;
-          // Disconnected
-          Serial.print(F("Disconnected client: "));
-          Serial.println(p.first);
-
-          return true;
-        }
-        return false;
-      }
-    );
-
-    return expire_count;
-    */
-
     // Taken from https://en.cppreference.com/w/cpp/container/map/erase_if
     int expire_count = 0;
     for (auto it = track_last_received.begin(), last = track_last_received.end(); it != last; ) {
       if (time - it->second > expire) { // Expire condition
         expire_count += 1;
-        it = track_last_received.erase(it);
-
+        apply_new_row();
         // Disconnected
         Serial.print(F("Disconnected client: "));
         Serial.println(it->first);
+
+        it = track_last_received.erase(it);
       } else {
         ++it;
       }
@@ -137,7 +104,8 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
 #ifdef MODE_SERVER
   const int PIN_OUT[] =
   #ifdef ESP32
-    { 33, 32, 4, 16, 17, 18, 19, 21, 22, 23 }
+    { 4, 16, 17, 18, 19, 23, 13, 27, 26, 25, 33, 32 }
+    //{ 33, 32, 4, 16, 17, 18, 19, 21, 22, 23 }
   #else
     { D0, D1, D2, D5, D6, D7 }
   #endif
@@ -145,8 +113,12 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
 #else
   #define VALUE_PIN_HIGH 0x00
   #define VALUE_PIN_LOW 0xFF
-  const int PIN_IN1 = D1;
-  unsigned long last_send;
+  #ifdef ESP32
+    const int PIN_IN1 = 13;
+  #else
+    const int PIN_IN1 = D1;
+  #endif
+  millis_t last_send;
 #endif
 
 #define LED_ON LOW
@@ -159,7 +131,7 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
 
 #include <defSettings.hpp>
 #define EE_MAGIC 0xDF01
-struct __attribute__((packed)) MySettings {
+struct __attribute__((packed)) settings_s {
   uint16_t magic = EE_MAGIC;
   char ssid[64] = DEFSETTINGS_SSID;
   char pass[64] = DEFSETTINGS_PASS;
@@ -175,11 +147,18 @@ struct __attribute__((packed)) MySettings {
   uint8_t gateway[4] = DEFSETTINGS_GATEWAY_IP;
   uint8_t mask[4] = DEFSETTINGS_MASK_IP;
 
+  unsigned long send_interval = 
+  #ifdef MODE_SERVER
+    1000UL
+  #else
+    100UL
+  #endif
+  ;
   // Client only
-  unsigned long send_interval = 250UL;
   uint16_t target_idx = 0;
 };
-MySettings settings;
+
+settings_s settings;
 bool show_polling = false;
 bool need_new_row = false;
 
@@ -228,14 +207,17 @@ void printSettings(bool showPass) {
   #endif
   Serial.println(settings.send_interval);
 
-  Serial.print(F("Target Index: "));
-  Serial.println(settings.target_idx);
+  #ifndef MODE_SERVER
+    Serial.print(F("Target Index: "));
+    Serial.println(settings.target_idx);
+  #endif
 }
 
 WiFiUDP udp;
 bool WiFiConnected = false;
 
 [[noreturn]] void askSettings();
+
 void reconnectWiFi() {
   if (settings.ssid[0] == '\0') {
     Serial.println(F("Empty SSID, reenter settings"));
@@ -296,7 +278,7 @@ void setup() {
     // Invalid settings
     Serial.println(F("Invalid settings in EEPROM"));
     //settings = {};
-    settings = MySettings();
+    settings = settings_s();
   }
   printSettings(false);
   
@@ -327,7 +309,7 @@ void setup() {
 }
 
 #define PKT_MAGIC 0xDF01
-struct __attribute__((packed)) MyPkt {
+struct __attribute__((packed)) pkt_s {
   uint16_t magic;
   uint16_t idx;
   uint8_t value;
@@ -356,14 +338,14 @@ struct __attribute__((packed)) MyPkt {
     IPAddress source_ip = udp.remoteIP();
     uint16_t source_port = udp.remotePort();
 
-    if (pkt_len != sizeof(MyPkt)) {
+    if (pkt_len != sizeof(pkt_s)) {
       apply_new_row();
       Serial.print(F("Unknown packet length: "));
       Serial.println(pkt_len);
       return;
     }
     
-    MyPkt* pkt = (MyPkt*)pkt_buff;
+    pkt_s* pkt = (pkt_s*)pkt_buff;
     if (pkt->magic != PKT_MAGIC) {
       apply_new_row();
       Serial.print(F("Invalid version: 0x"));
@@ -378,7 +360,7 @@ struct __attribute__((packed)) MyPkt {
       return;
     }
 
-    track_received({ .ip = source_ip, .port = source_port }, millis());
+    track_received({ source_ip, source_port }, millis());
 
     bool prev_state = digitalRead(PIN_OUT[pkt->idx]);
     digitalWrite(PIN_OUT[pkt->idx], pkt->value ? HIGH : LOW);
@@ -434,9 +416,9 @@ void readSettings() {
   String s;
   IPAddress ip;
 
-  MySettings _def;
+  settings_s _def;
 
-  memset((void*)&settings, 0, sizeof(MySettings));
+  memset((void*)&settings, 0, sizeof(settings_s));
   settings.magic = _def.magic;
   Serial.println();
   Serial.print(F("Network Name (SSID): "));
@@ -482,7 +464,7 @@ void readSettings() {
 
   Serial.println();
   printSettings(true);
-  Serial.print("Save? [N/y] ");
+  Serial.print(F("Save? [N/y]: "));
   s = serialReadLine();
   s.toUpperCase();
   if (s == "Y") {
@@ -492,28 +474,46 @@ void readSettings() {
   }
 }
 
+[[noreturn]] void reboot() {
+  Serial.println(F("Wait for Reboot..."));
+  Serial.println();
+  Serial.flush();
+  hSMConnected = nullptr;
+  hSMGotIP = nullptr;
+  hSMDisconnected = nullptr;
+  ESP.restart();
+  while(true);
+}
+
 [[noreturn]] void askSettings() {
   Serial.println();
   readSettings();
-  Serial.println(F("REBOOT required!"));
-  while(true);
+  reboot();
 }
 
 void loop() {
   yield();
   if (Serial.available()) {
     char value = Serial.read();
-    if (value == '!') {
+    if ((value == 'S') || (value == 's')) {
       udp.stop();
       apply_new_row();
       askSettings(); // noreturn
-    } else if (value == '?') {
-      show_polling = !show_polling;
-    } else if (value == '\\') {
+    } else if ((value == 'I') || (value == 'i')) {
       apply_new_row();
-      Serial.print(F("WiFi Signal = "));
-      Serial.print(WiFi.RSSI());
-      Serial.println(F(" dbm"));
+      printSettings(false);
+    } else if ((value == 'D') || (value == 'd')) {
+      show_polling = !show_polling;
+    } else if ((value == 'W') || (value == 'w')) {
+      if(WiFi.isConnected()) {
+        apply_new_row();
+        Serial.print(F("WiFi Signal = "));
+        Serial.print(WiFi.RSSI());
+        Serial.println(F(" dbm"));
+      }
+    } else if ((value == 'R') || (value == 'r')) {
+        apply_new_row();
+        reboot(); // noreturn
     }
   }
   #ifdef MODE_SERVER
@@ -523,23 +523,27 @@ void loop() {
     #ifdef MODE_SERVER
       parsePacket();
     #else
-      auto current_time = millis();
+      millis_t current_time = millis();
       if (current_time - last_send > settings.send_interval) {
-        MyPkt pkt;
-        memset(&pkt, 0, sizeof(MyPkt));
+        pkt_s pkt;
+        memset(&pkt, 0, sizeof(pkt_s));
         pkt.magic = settings.magic;
         pkt.idx = settings.target_idx;
         pkt.value = digitalRead(PIN_IN1) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
         if (pkt.value != old_state) {
           apply_new_row();
-          Serial.println("Changed STATE!");
+          if(pkt.value) {
+            Serial.println(F("Changed STATE to Close!"));
+          } else {
+            Serial.println(F("Changed STATE to Open!"));
+          }
           old_state = pkt.value;
         } 
         udp.beginPacket(settings.server_ip, settings.server_port);
-        udp.write((char*)&pkt, sizeof(MyPkt));
+        lib::writeT(udp, &pkt);
         udp.endPacket();
         if (show_polling) {
-          Serial.print('.');
+          Serial.print(F("."));
           need_new_row = true;
         }
         last_send = current_time;
