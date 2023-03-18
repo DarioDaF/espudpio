@@ -521,6 +521,7 @@ void disconnectWiFi() {
   hSMGotIP = nullptr;
   hSMDisconnected = nullptr;
   WiFi.disconnect(true);
+  WiFiConnected = false;
 }
 
 [[noreturn]] void reboot() {
