@@ -105,8 +105,8 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
 #ifdef MODE_SERVER
   const int PIN_OUT[] =
   #ifdef ESP32
-    { 4, 16, 17, 18, 19, 23, 13, 27, 26, 25, 33, 32 }
-    //{ 33, 32, 4, 16, 17, 18, 19, 21, 22, 23 }
+    //{ 4, 16, 17, 18, 19, 23, 13, 27, 26, 25, 33, 32 }
+    { 33, 32, 4, 16, 17, 18, 19, 21, 22, 23 }
   #else
     { D0, D1, D2, D5, D6, D7 }
   #endif
@@ -316,7 +316,7 @@ struct __attribute__((packed)) pkt_s {
   uint8_t value;
 };
 
-#define MAX_UDP_PACKET 200
+#define MAX_UDP_PACKET 1024
 size_t pkt_len = 0;
 char pkt_buff[MAX_UDP_PACKET];
 IPPort pkt_source;
@@ -330,7 +330,7 @@ bool parseQueryPacket() {
 
   char query = pkt_buff[1];
 
-  lib::PrintBuff pbuff(MAX_UDP_PACKET);
+  lib::PrintBuff pbuff(sizeof(pkt_buff), pkt_buff);
   if (!execQuery(query, pbuff)) {
     pbuff.print(F("Unknown query: "));
     pbuff.println(query);
@@ -515,13 +515,19 @@ void readSettings() {
   }
 }
 
-[[noreturn]] void reboot() {
-  Serial.println(F("Wait for Reboot..."));
-  Serial.println();
-  Serial.flush();
+void disconnectWiFi() {
+  udp.stop();
   hSMConnected = nullptr;
   hSMGotIP = nullptr;
   hSMDisconnected = nullptr;
+  WiFi.disconnect(true);
+}
+
+[[noreturn]] void reboot() {
+  disconnectWiFi();
+  Serial.println(F("Wait for Reboot..."));
+  Serial.println();
+  Serial.flush();
   ESP.restart();
   while(true);
 }
@@ -575,16 +581,17 @@ void loop() {
   yield();
   if (Serial.available()) {
     char query = Serial.read();
-    apply_new_row();
     if ((query == 'S') || (query == 's')) {
-      udp.stop();
-      // @TODO: Should also disable rety connection/hooks!!!
+      apply_new_row();
+      disconnectWiFi(); // Disable wifi and hooks to avoid messages
       askSettings(); // noreturn
     } else if ((query == 'R') || (query == 'r')) {
+      apply_new_row();
       reboot(); // noreturn
     } else if ((query == 'D') || (query == 'd')) {
       show_polling = !show_polling;
     } else {
+      apply_new_row();
       if (!execQuery(query, Serial)) {
         Serial.print(F("Unknown command: "));
         Serial.println(query);

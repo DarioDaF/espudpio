@@ -53,6 +53,23 @@ namespace lib {
                 return toCopy;
             }
     };
+    class PrintBuffStr : public Print {
+        private:
+            String buff;
+        public:
+            PrintBuffStr() : buff("") {}
+            virtual ~PrintBuffStr() {}
+            size_t getPos() const { return this->buff.length(); }
+            const char* getBuff() const { return this->buff.c_str(); }
+            virtual size_t write(uint8_t x) override {
+                this->buff += (char)x;
+                return 1;
+            }
+            virtual size_t write(const uint8_t *buffer, size_t size) override {
+                this->buff.concat((char*)buffer, size);
+                return size;
+            }
+    };
 
     // IPAddress
     inline const uint32_t v4(const IPAddress& ip) {
