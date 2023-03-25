@@ -160,7 +160,7 @@ struct __attribute__((packed)) server_s {
 struct __attribute__((packed)) settings_s {
   uint16_t magic = EE_MAGIC;
   char mode = EE_MODE;
-  uint16_t local_id = 0;
+  uint16_t node_id = 0;
   char ssid[64] = DEFSETTINGS_SSID;
   char pass[64] = DEFSETTINGS_PASS;
   uint8_t local_ip[4] = 
@@ -201,10 +201,10 @@ void printSettings(Print& out, bool showPass) {
     out.println(F("[SERVER MODE]"));
   #else
     out.println(F("[CLIENT MODE]"));
-
-    out.print(F("Local Id: "));
-    out.println(settings.local_id);
   #endif
+
+  out.print(F("Node Id: "));
+  out.println(settings.node_id);
 
   out.print(F("Network Name (SSID): "));
   out.println(settings.ssid);
@@ -517,12 +517,11 @@ void readSettings() {
 
   memset((void*)&settings, 0, sizeof(settings_s));
   settings.magic = _def.magic;
+  settings.mode = _def.mode;
   Serial.println();
 
-  #ifdef MODE_CLIENT
-    Serial.print(F("Local Id: "));
-    settings.local_id = serialReadLine().toInt();
-  #endif
+  Serial.print(F("Node Id: "));
+  settings.node_id = serialReadLine().toInt();
 
   Serial.print(F("Network Name (SSID): "));
   serialReadLine().toCharArray(settings.ssid, sizeof(settings.ssid) - 1);
