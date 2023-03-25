@@ -50,7 +50,7 @@ struct IPPort : public Printable {
   bool track_received(const IPPort& ipp, millis_t time) {
     bool notPresent = track_last_received.find(ipp) == track_last_received.end();
     track_last_received[ipp] = time;
-    if (notPresent) {
+    if(notPresent) {
       apply_new_row();
       // Connected
       Serial.print(F("Connected client: "));
@@ -63,7 +63,7 @@ struct IPPort : public Printable {
     // Taken from https://en.cppreference.com/w/cpp/container/map/erase_if
     int expire_count = 0;
     for (auto it = track_last_received.begin(), last = track_last_received.end(); it != last; ) {
-      if (time - it->second > expire) { // Expire condition
+      if(time - it->second > expire) { // Expire condition
         expire_count += 1;
         apply_new_row();
         // Disconnected
@@ -111,18 +111,24 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
     { D0, D1, D2, D5, D6, D7, D8 }
   #endif
   ;
+  #define MIN_INTERVAL_VALUE (millis_t)500
 #else
   #define VALUE_PIN_HIGH 0x00
   #define VALUE_PIN_LOW 0xFF
   #define SWICH_OPEN VALUE_PIN_HIGH
   #define SWICH_CLOSED VALUE_PIN_LOW
+  #define MIN_INTERVAL_VALUE (millis_t)50
   #ifdef ESP32
     const int PIN_IN[] = { 13 };
   #else
     const int PIN_IN[] = { D1, D2, D5, D6, D7 };
   #endif
   uint8_t old_state[lib::size(PIN_IN)];
-  millis_t last_send;
+  struct client_data_s {
+    uint16_t count = 0;
+    millis_t last_send = 0;
+    millis_t send_interval = 0;
+  } client_data;
 #endif
 
 #define LED_ON LOW
@@ -198,7 +204,7 @@ void printSettings(Print& out, bool showPass) {
   out.println(settings.ssid);
 
   out.print(F("Password: "));
-  if (showPass) {
+  if(showPass) {
     out.println(settings.pass);
   } else {
     out.println(F("***"));
@@ -245,7 +251,7 @@ bool WiFiConnected = false;
 [[noreturn]] void askSettings();
 
 void reconnectWiFi() {
-  if (settings.ssid[0] == '\0') {
+  if(settings.ssid[0] == '\0') {
     Serial.println(F("Empty SSID, reenter settings"));
     askSettings();
   }
@@ -309,7 +315,7 @@ void setup() {
   Serial.println();
   EEPROM.begin(512);
   EEPROM.get(0, settings);
-  if (settings.magic != EE_MAGIC) {
+  if(settings.magic != EE_MAGIC) {
     // Invalid settings
     Serial.println(F("Invalid settings in EEPROM"));
     //settings = {};
@@ -340,7 +346,15 @@ void setup() {
       pinMode(PIN_IN[i], INPUT_PULLUP);
       old_state[i] = VALUE_PIN_HIGH;
     }
-    last_send = millis();
+    size_t count = 0;
+    while(count < lib::size(settings.server)) {
+      if(!lib::isSet(IPAddress(settings.server[count].ip)))
+        break;
+      ++count;
+    }
+    ++count;
+    client_data.send_interval = settings.send_interval / count;
+    client_data.last_send = millis();
   #endif
 }
 
@@ -358,15 +372,15 @@ IPPort pkt_source;
 
 bool execQuery(char query, Print& out);
 bool parseQueryPacket() {
-  if (pkt_len != 2)
+  if(pkt_len != 2)
     return false;
-  if (pkt_buff[0] != '?')
+  if(pkt_buff[0] != '?')
     return false;
 
   char query = pkt_buff[1];
 
   lib::PrintBuff pbuff(sizeof(pkt_buff), pkt_buff);
-  if (!execQuery(query, pbuff)) {
+  if(!execQuery(query, pbuff)) {
     pbuff.print(F("Unknown query: "));
     pbuff.println(query);
     // Accept them anyway cause they are "valid" but unknown!!!
@@ -381,7 +395,7 @@ bool parseQueryPacket() {
 
 #ifdef MODE_SERVER
   bool parsePktPacket() {
-    if (pkt_len != sizeof(pkt_s)) {
+    if(pkt_len != sizeof(pkt_s)) {
       apply_new_row();
       Serial.print(F("Unknown packet length: "));
       Serial.println(pkt_len);
@@ -389,14 +403,14 @@ bool parseQueryPacket() {
     }
     
     pkt_s* pkt = (pkt_s*)pkt_buff;
-    if (pkt->magic != PKT_MAGIC) {
+    if(pkt->magic != PKT_MAGIC) {
       apply_new_row();
       Serial.print(F("Invalid version: 0x"));
       Serial.println(pkt->magic, HEX);
       return false;
     }
 
-    if (pkt->idx >= lib::size(PIN_OUT)) {
+    if(pkt->idx >= lib::size(PIN_OUT)) {
       apply_new_row();
       Serial.print(F("Invalid target: "));
       Serial.println(pkt->idx);
@@ -408,18 +422,18 @@ bool parseQueryPacket() {
     bool prev_state = digitalRead(PIN_OUT[pkt->idx]);
     digitalWrite(PIN_OUT[pkt->idx], pkt->value ? HIGH : LOW);
     bool new_state = digitalRead(PIN_OUT[pkt->idx]);
-    if (prev_state != new_state) {
+    if(prev_state != new_state) {
       apply_new_row();
       Serial.print(F("Changed value of output "));
       Serial.print(pkt->idx);
-      if (new_state)
+      if(new_state)
         Serial.print(F(" to HIGH"));
       else
         Serial.print(F(" to LOW"));
       Serial.print(F("; command sent by "));
       Serial.println(pkt_source);
     } else {
-      if (show_polling) {
+      if(show_polling) {
         Serial.print(pkt->idx, HEX); //Valido per max 16 elementi 0..f
         need_new_row = true;
       }
@@ -432,7 +446,7 @@ bool parseQueryPacket() {
 void parsePacket() {
   pkt_len = udp.parsePacket();
 
-  if (pkt_len == 0)
+  if(pkt_len == 0)
     return; // No packet received
 
   if(pkt_len > sizeof(pkt_buff)) {
@@ -451,11 +465,11 @@ void parsePacket() {
 
   bool parsed = false;
 
-  if (!parsed)
+  if(!parsed)
     parsed = parseQueryPacket();
 
   #ifdef MODE_SERVER
-    if (!parsed)
+    if(!parsed)
       parsed = parsePktPacket();
   #endif
 
@@ -465,10 +479,10 @@ void parsePacket() {
 String serialReadLine() {
   String res = "";
   while (true) {
-    if (Serial.available()) {
+    if(Serial.available()) {
       int c = Serial.read();
       Serial.print((char)c);
-      if (c == '\n') {
+      if(c == '\n') {
         return res;
       } else if(c != '\r') {
         res += (char)c;
@@ -508,7 +522,7 @@ void readSettings() {
   Serial.print(F("Local IP Address: "));
   serialReadIP(settings.local_ip);
 
-  if (lib::isSet(IPAddress(settings.local_ip))) {
+  if(lib::isSet(IPAddress(settings.local_ip))) {
     Serial.print(F("Subnet Mask: "));
     serialReadIP(settings.mask);
 
@@ -525,8 +539,9 @@ void readSettings() {
     Serial.print(F("Send Interval: "));
   #endif
   settings.send_interval = serialReadLine().toInt();
+  settings.send_interval = max(settings.send_interval, MIN_INTERVAL_VALUE);
 
-  #ifdef MODE_CLIENT 
+  #ifdef MODE_CLIENT
     for(size_t i = 0; i < lib::size(settings.server); ++i) {
       Serial.print(F("Server["));
       Serial.print(i);
@@ -552,7 +567,7 @@ void readSettings() {
   Serial.print(F("Save? [N/y]: "));
   s = serialReadLine();
   s.toUpperCase();
-  if (s == "Y") {
+  if(s == "Y") {
     EEPROM.put(0, settings);
     EEPROM.commit();
     Serial.println(F("SAVED!"));
@@ -575,10 +590,10 @@ void readSettings() {
 }
 
 bool execQuery(char query, Print& out) {
-  if ((query == 'I') || (query == 'i')) {
+  if((query == 'I') || (query == 'i')) {
     printSettings(out, false);
     return true;
-  } else if ((query == 'W') || (query == 'w')) {
+  } else if((query == 'W') || (query == 'w')) {
     if(WiFi.isConnected()) {
       out.print(F("WiFi Signal = "));
       out.print(WiFi.RSSI());
@@ -589,17 +604,17 @@ bool execQuery(char query, Print& out) {
     return true;
   }
   #ifdef MODE_SERVER
-    else if ((query == 'C') || (query == 'c')) {
+    else if((query == 'C') || (query == 'c')) {
       out.println(F("Clients connected:"));
       for (const auto& kv : track_last_received) {
         out.println(kv.first);
       }
       return true;
-    } else if ((query == 'O') || (query == 'o')) {
+    } else if((query == 'O') || (query == 'o')) {
       out.print(F("Outputs: [ "));
       bool first = true;
       for (const auto& pin : PIN_OUT) {
-        if (first) {
+        if(first) {
           first = false;
         } else {
           out.print(F(", "));
@@ -615,20 +630,20 @@ bool execQuery(char query, Print& out) {
 
 void loop() {
   yield();
-  if (Serial.available()) {
+  if(Serial.available()) {
     char query = Serial.read();
-    if ((query == 'S') || (query == 's')) {
+    if((query == 'S') || (query == 's')) {
       apply_new_row();
       disconnectWiFi(); // Disable wifi and hooks to avoid messages
       askSettings(); // noreturn
-    } else if ((query == 'R') || (query == 'r')) {
+    } else if((query == 'R') || (query == 'r')) {
       apply_new_row();
       reboot(); // noreturn
-    } else if ((query == 'D') || (query == 'd')) {
+    } else if((query == 'D') || (query == 'd')) {
       show_polling = !show_polling;
     } else {
       apply_new_row();
-      if (!execQuery(query, Serial)) {
+      if(!execQuery(query, Serial)) {
         Serial.print(F("Unknown command: "));
         Serial.println(query);
       }
@@ -641,35 +656,40 @@ void loop() {
     parsePacket();
     #ifdef MODE_CLIENT
       millis_t current_time = millis();
-      if (current_time - last_send > settings.send_interval) {
+      if(current_time - client_data.last_send > client_data.send_interval) {
         pkt_s pkt;
-        for(size_t i = 0; i < lib::size(settings.server); ++i) {
-          if(!lib::isSet(IPAddress(settings.server[i].ip))) break;
+        //for(size_t i = 0; i < lib::size(settings.server); ++i) {
+        if(lib::isSet(IPAddress(settings.server[client_data.count].ip))) {
           memset(&pkt, 0, sizeof(pkt_s));
           pkt.magic = settings.magic;
-          pkt.idx = settings.server[i].target;
-          pkt.value = digitalRead(PIN_IN[i]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
-          if (pkt.value != old_state[i]) {
+          pkt.idx = settings.server[client_data.count].target;
+          pkt.value = digitalRead(PIN_IN[client_data.count]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
+          if(pkt.value != old_state[client_data.count]) {
             apply_new_row();
             Serial.print(F("Changed swich["));
-            Serial.print(i);
+            Serial.print(client_data.count);
             Serial.print(F("] state to "));
             if(pkt.value == SWICH_CLOSED) {
               Serial.println(F("closed"));
             } else {
               Serial.println(F("open"));
             }
-            old_state[i] = pkt.value;
+            old_state[client_data.count] = pkt.value;
           }
-          udp.beginPacket(settings.server[i].ip, settings.server[i].port);
+          udp.beginPacket(settings.server[client_data.count].ip, settings.server[client_data.count].port);
           lib::writeT(udp, &pkt);
           udp.endPacket();
+          ++client_data.count;
+          if(client_data.count >= lib::size(settings.server))
+            client_data.count = 0;
+        } else {
+          client_data.count = 0;
         }
-        if (show_polling) {
+        if(show_polling) {
           Serial.print(F("."));
           need_new_row = true;
         }
-        last_send = current_time;
+        client_data.last_send = current_time;
       }
     #endif
   }
