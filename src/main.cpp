@@ -607,6 +607,7 @@ bool execQuery(char query, Print& out) {
     return true;
   } else if(query == '+') {
     if(WiFi.isConnected()) {
+      out.println(F("WiFi Info: <CONNECTED>"));
       out.print(F("Network Name (SSID): "));
       out.println(WiFi.SSID());
       out.print(F("WiFi Channel = "));
@@ -621,7 +622,7 @@ bool execQuery(char query, Print& out) {
       out.print(F("Gateway IP Address: "));
       out.println(WiFi.gatewayIP());
     } else {
-      out.println(F("WiFi <NOT CONNECTED>"));
+      out.println(F("WiFi Info: <NOT CONNECTED>"));
     }
     return true;
   } else if(query == 'W') {
