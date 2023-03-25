@@ -114,8 +114,8 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
 #else
   #define VALUE_PIN_HIGH 0x00
   #define VALUE_PIN_LOW 0xFF
-  #define STATE_OPEN VALUE_PIN_HIGH
-  #define STATE_CLOSE VALUE_PIN_LOW
+  #define SWICH_OPEN VALUE_PIN_HIGH
+  #define SWICH_CLOSED VALUE_PIN_LOW
   #ifdef ESP32
     const int PIN_IN1 = 13;
   #else
@@ -265,8 +265,17 @@ void WiFiStationDisconnected(const lib::WiFiEventStationModeDisconnected& event)
 
 lib::WiFiEventHandler hSMConnected, hSMGotIP, hSMDisconnected;
 
-void setup() {
+void disconnectWiFi() {
+  udp.stop();
+  hSMConnected = nullptr;
+  hSMGotIP = nullptr;
+  hSMDisconnected = nullptr;
   WiFi.disconnect(true);
+  WiFiConnected = false;
+}
+
+void setup() {
+  disconnectWiFi();
   pinMode(PIN_NET, OUTPUT);
   digitalWrite(PIN_NET, LED_OFF);
   Serial.begin(115200);
@@ -515,15 +524,6 @@ void readSettings() {
   }
 }
 
-void disconnectWiFi() {
-  udp.stop();
-  hSMConnected = nullptr;
-  hSMGotIP = nullptr;
-  hSMDisconnected = nullptr;
-  WiFi.disconnect(true);
-  WiFiConnected = false;
-}
-
 [[noreturn]] void reboot() {
   disconnectWiFi();
   Serial.println(F("Wait for Reboot..."));
@@ -615,7 +615,7 @@ void loop() {
         pkt.value = digitalRead(PIN_IN1) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
         if (pkt.value != old_state) {
           apply_new_row();
-          if(pkt.value == STATE_CLOSE) {
+          if(pkt.value == SWICH_CLOSED) {
             Serial.println(F("Changed swich state to closed"));
           } else {
             Serial.println(F("Changed swich state to open"));

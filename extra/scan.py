@@ -1,4 +1,5 @@
 
+from time import sleep 
 import socket
 from typing import Iterable
 
@@ -8,7 +9,7 @@ def readIpPort(s: str) -> tuple[str, int]:
 
 MAX_UDP_PACKER = 1024
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-s.settimeout(3.0)
+s.settimeout(4.0)
 def sendRecv(msg: bytes, target: tuple[str, int], ignore_extra = False):
     global s, MAX_UDP_PACKER
     s.sendto(msg, target)
@@ -56,18 +57,35 @@ SERVER = (args.server, args.port)
 
 try:
     outputs = sendRecv(b'?O', SERVER)
-except TimeoutError:
-    outputs = 'Outputs: TIMEOUT'
-print(outputs)
-
-try:
+    print(outputs)
     clients = sendRecv(b'?C', SERVER)
 except TimeoutError:
-    print('Could not read connected clients')
-    clients = ''
+    print('ERROR: Server timed out')
+    exit(1)
+
 conns = [ SERVER, *(readIpPort(client.strip()) for client in clients.split('\n')[1:]) ]
 
-for data, sender in sendRecvMultiNoErr(b'?W', conns):
-    if data is None:
-        data = 'TIMEOUT'
-    print(f'{sender} -> {data}')
+rssis = { sender: data for data, sender in sendRecvMultiNoErr(b'?W', conns) }
+infos = { sender: data for data, sender in sendRecvMultiNoErr(b'?I', conns) }
+targets = {}
+
+for sender, info in infos.items():
+    target = None
+    if info is not None:
+        target = '#'
+        for info_line in info.split('\n'):
+            info_line = info_line.strip()
+            TARGET_TEXT = 'Target Index: '
+            if info_line.startswith(TARGET_TEXT):
+                target = int(info_line[len(TARGET_TEXT):])
+                break
+    targets[sender] = target
+
+for sender in conns:
+    rssi = rssis[sender]
+    target = targets[sender]
+    if rssi is None:
+        rssi = 'TIMEOUT'
+    if target is None:
+        target = 'TIMEOUT'
+    print(f'{sender} [{target}] -> {rssi}')
