@@ -10,8 +10,8 @@
 namespace lib {
     // General use
     #ifdef ESP32
-        template<typename T, int N>
-        inline int size(T(&)[N]) { return N; }
+        template <typename _Tp, size_t _Nm>
+        constexpr inline size_t size(const _Tp (&)[_Nm]) noexcept { return _Nm; }
     #else
         using std::size;
     #endif

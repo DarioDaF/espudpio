@@ -108,7 +108,7 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
     //{ 4, 16, 17, 18, 19, 23, 13, 27, 26, 25, 33, 32 }
     { 33, 32, 4, 16, 17, 18, 19, 21, 22, 23 }
   #else
-    { D0, D1, D2, D5, D6, D7 }
+    { D0, D1, D2, D5, D6, D7, D8 }
   #endif
   ;
 #else
@@ -117,10 +117,11 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
   #define SWICH_OPEN VALUE_PIN_HIGH
   #define SWICH_CLOSED VALUE_PIN_LOW
   #ifdef ESP32
-    const int PIN_IN1 = 13;
+    const int PIN_IN[] = { 13 };
   #else
-    const int PIN_IN1 = D1;
+    const int PIN_IN[] = { D1, D2, D5, D6, D7 };
   #endif
+  uint8_t old_state[lib::size(PIN_IN)];
   millis_t last_send;
 #endif
 
@@ -132,24 +133,34 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
   const int PIN_NET = D4;
 #endif
 
+size_t srvidx = 0;
+
+#define IP_NONE { 0, 0, 0, 0 }
+#define PORT_NONE 0
+#define TARGET_NONE 0xFFFF
+struct __attribute__((packed)) server_s {
+  uint8_t ip[4] = IP_NONE;
+  uint16_t port = PORT_NONE;
+  uint16_t target = TARGET_NONE;
+};
+
 #include <defSettings.hpp>
 #define EE_MAGIC 0xDF01
 struct __attribute__((packed)) settings_s {
   uint16_t magic = EE_MAGIC;
+  uint16_t local_id = 0;
   char ssid[64] = DEFSETTINGS_SSID;
   char pass[64] = DEFSETTINGS_PASS;
-  uint8_t server_ip[4] = DEFSETTINGS_SERVER_IP;
-  uint16_t server_port = 5000;
-  uint8_t local_ip[4] =
+  uint8_t local_ip[4] = 
   #ifdef MODE_SERVER
     DEFSETTINGS_SERVER_IP
   #else
-    { 0, 0, 0, 0 }
+    IP_NONE
   #endif
   ;
-  uint8_t gateway[4] = DEFSETTINGS_GATEWAY_IP;
   uint8_t mask[4] = DEFSETTINGS_MASK_IP;
-
+  uint8_t gateway[4] = DEFSETTINGS_GATEWAY_IP;
+  uint16_t udp_server_port = DEFSETTINGS_SERVER_PORT;
   unsigned long send_interval = 
   #ifdef MODE_SERVER
     1000UL
@@ -157,8 +168,9 @@ struct __attribute__((packed)) settings_s {
     100UL
   #endif
   ;
-  // Client only
-  uint16_t target_idx = 0;
+  #ifdef MODE_CLIENT
+    server_s server[lib::size(PIN_IN)];
+  #endif
 };
 
 settings_s settings;
@@ -177,7 +189,11 @@ void printSettings(Print& out, bool showPass) {
     out.println(F("[SERVER MODE]"));
   #else
     out.println(F("[CLIENT MODE]"));
+
+    out.print(F("Local Id: "));
+    out.println(settings.local_id);
   #endif
+
   out.print(F("Network Name (SSID): "));
   out.println(settings.ssid);
 
@@ -188,12 +204,6 @@ void printSettings(Print& out, bool showPass) {
     out.println(F("***"));
   }
 
-  out.print(F("Server IP Address: "));
-  out.println(IPAddress(settings.server_ip));
-
-  out.print(F("Server Port: "));
-  out.println(settings.server_port);
-
   out.print(F("Local IP Address: "));
   out.println(IPAddress(settings.local_ip));
 
@@ -203,6 +213,9 @@ void printSettings(Print& out, bool showPass) {
   out.print(F("Gateway IP Address: "));
   out.println(IPAddress(settings.gateway));
 
+  out.print(F("Local Port: "));
+  out.println(settings.udp_server_port);
+
   #ifdef MODE_SERVER
     out.print(F("Expire Interval: "));
   #else
@@ -211,8 +224,18 @@ void printSettings(Print& out, bool showPass) {
   out.println(settings.send_interval);
 
   #ifndef MODE_SERVER
-    out.print(F("Target Index: "));
-    out.println(settings.target_idx);
+    for(size_t i = 0; i < lib::size(settings.server); i++) {
+      out.print(F("Server["));
+      out.print(i);
+      out.print(F("] IP Address: "));
+      out.print(IPAddress(settings.server[i].ip));
+
+      out.print(F(", Port: "));
+      out.print(settings.server[i].port);
+
+      out.print(F(", Target: "));
+      out.println(settings.server[i].target);
+    }
   #endif
 }
 
@@ -304,7 +327,7 @@ void setup() {
   hSMDisconnected = lib::onStationModeDisconnected(WiFi, WiFiStationDisconnected);
   reconnectWiFi();
 
-  udp.begin(settings.server_port); // Server for both for general info
+  udp.begin(settings.udp_server_port); // Server for both for general info
 
   // Prepare pins
   #ifdef MODE_SERVER
@@ -313,7 +336,10 @@ void setup() {
       digitalWrite(pin, LOW);
     }
   #else
-    pinMode(PIN_IN1, INPUT_PULLUP);
+    for(size_t i = 0; i < lib::size(PIN_IN); i++) {
+      pinMode(PIN_IN[i], INPUT_PULLUP);
+      old_state[i] = VALUE_PIN_HIGH;
+    }
     last_send = millis();
   #endif
 }
@@ -436,10 +462,6 @@ void parsePacket() {
   pkt_len = 0;
 }
 
-#ifdef MODE_CLIENT
-  uint8_t old_state = VALUE_PIN_HIGH;
-#endif
-
 String serialReadLine() {
   String res = "";
   while (true) {
@@ -471,24 +493,20 @@ void readSettings() {
   memset((void*)&settings, 0, sizeof(settings_s));
   settings.magic = _def.magic;
   Serial.println();
+
+  #ifdef MODE_CLIENT
+    Serial.print(F("Local Id: "));
+    settings.local_id = serialReadLine().toInt();
+  #endif
+
   Serial.print(F("Network Name (SSID): "));
   serialReadLine().toCharArray(settings.ssid, sizeof(settings.ssid) - 1);
 
   Serial.print(F("Password: "));
   serialReadLine().toCharArray(settings.pass, sizeof(settings.pass) - 1);
 
-  Serial.print(F("Server IP Address: "));
-  serialReadIP(settings.server_ip);
-
-  Serial.print(F("Server Port: "));
-  settings.server_port = serialReadLine().toInt();
-
-  #ifdef MODE_SERVER
-    memcpy(settings.local_ip, settings.server_ip, 4);
-  #else
-    Serial.print(F("Local IP Address: "));
-    serialReadIP(settings.local_ip);
-  #endif
+  Serial.print(F("Local IP Address: "));
+  serialReadIP(settings.local_ip);
 
   if (lib::isSet(IPAddress(settings.local_ip))) {
     Serial.print(F("Subnet Mask: "));
@@ -498,6 +516,9 @@ void readSettings() {
     serialReadIP(settings.gateway);
   }
 
+  Serial.print(F("Local Port: "));
+  settings.udp_server_port = serialReadLine().toInt();
+
   #ifdef MODE_SERVER
     Serial.print(F("Expire Interval: "));
   #else
@@ -505,11 +526,25 @@ void readSettings() {
   #endif
   settings.send_interval = serialReadLine().toInt();
 
-  #ifdef MODE_CLIENT  
-    Serial.print(F("Target Index: "));
-    settings.target_idx = serialReadLine().toInt();
-  #else
-    settings.target_idx = _def.target_idx;
+  #ifdef MODE_CLIENT 
+    for(size_t i = 0; i < lib::size(settings.server); ++i) {
+      Serial.print(F("Server["));
+      Serial.print(i);
+      Serial.print(F("] IP Address: "));
+      serialReadIP(settings.server[i].ip);
+      if(!lib::isSet(IPAddress(settings.server[i].ip))) {
+        break;
+      }
+      Serial.print(F("Server["));
+      Serial.print(i);
+      Serial.print(F("] Port: "));
+      settings.server[i].port = serialReadLine().toInt();
+
+      Serial.print(F("Server["));
+      Serial.print(i);
+      Serial.print(F("] Target: "));
+      settings.server[i].target = serialReadLine().toInt();
+    }
   #endif
 
   Serial.println();
@@ -604,27 +639,32 @@ void loop() {
   #endif
   if(WiFiConnected) {
     parsePacket();
-
     #ifdef MODE_CLIENT
       millis_t current_time = millis();
       if (current_time - last_send > settings.send_interval) {
         pkt_s pkt;
-        memset(&pkt, 0, sizeof(pkt_s));
-        pkt.magic = settings.magic;
-        pkt.idx = settings.target_idx;
-        pkt.value = digitalRead(PIN_IN1) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
-        if (pkt.value != old_state) {
-          apply_new_row();
-          if(pkt.value == SWICH_CLOSED) {
-            Serial.println(F("Changed swich state to closed"));
-          } else {
-            Serial.println(F("Changed swich state to open"));
+        for(size_t i = 0; i < lib::size(settings.server); ++i) {
+          if(!lib::isSet(IPAddress(settings.server[i].ip))) break;
+          memset(&pkt, 0, sizeof(pkt_s));
+          pkt.magic = settings.magic;
+          pkt.idx = settings.server[i].target;
+          pkt.value = digitalRead(PIN_IN[i]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
+          if (pkt.value != old_state[i]) {
+            apply_new_row();
+            Serial.print(F("Changed swich["));
+            Serial.print(i);
+            Serial.print(F("] state to "));
+            if(pkt.value == SWICH_CLOSED) {
+              Serial.println(F("closed"));
+            } else {
+              Serial.println(F("open"));
+            }
+            old_state[i] = pkt.value;
           }
-          old_state = pkt.value;
-        } 
-        udp.beginPacket(settings.server_ip, settings.server_port);
-        lib::writeT(udp, &pkt);
-        udp.endPacket();
+          udp.beginPacket(settings.server[i].ip, settings.server[i].port);
+          lib::writeT(udp, &pkt);
+          udp.endPacket();
+        }
         if (show_polling) {
           Serial.print(F("."));
           need_new_row = true;

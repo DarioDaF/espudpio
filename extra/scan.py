@@ -75,7 +75,7 @@ for sender, info in infos.items():
         target = '#'
         for info_line in info.split('\n'):
             info_line = info_line.strip()
-            TARGET_TEXT = 'Target Index: '
+            TARGET_TEXT = 'Local Id: '
             if info_line.startswith(TARGET_TEXT):
                 target = int(info_line[len(TARGET_TEXT):])
                 break
