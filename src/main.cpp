@@ -123,27 +123,25 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
   #else
     const int PIN_IN[] = { D1, D2, D5, D6, D7 };
   #endif
-  uint8_t old_state[lib::size(PIN_IN)];
-  struct client_data_s {
-    uint16_t count = 0;
-    millis_t last_send = 0;
-    millis_t send_interval = 0;
-  } client_data;
+  struct send_loop_s {
+    uint8_t old_state[lib::size(PIN_IN)];
+    uint16_t index = 0;
+    millis_t stored_time = 0;
+    millis_t interval = 0;
+  } send_loop;
 #endif
 
 #define LED_ON LOW
 #define LED_OFF HIGH
 #ifdef ESP32
-  const int PIN_NET = 2;
+  const int PIN_LED = 2;
 #else
-  const int PIN_NET = D4;
+  const int PIN_LED = D4;
 #endif
-
-size_t srvidx = 0;
 
 #define IP_NONE { 0, 0, 0, 0 }
 #define PORT_NONE 0
-#define TARGET_NONE 0xFFFF
+#define TARGET_NONE 0
 struct __attribute__((packed)) server_s {
   uint8_t ip[4] = IP_NONE;
   uint16_t port = PORT_NONE;
@@ -227,10 +225,13 @@ void printSettings(Print& out, bool showPass) {
   #else
     out.print(F("Send Interval: "));
   #endif
-  out.println(settings.send_interval);
+  out.print(settings.send_interval);
+  out.println(F(" ms"));
 
-  #ifndef MODE_SERVER
-    for(size_t i = 0; i < lib::size(settings.server); i++) {
+  #ifdef MODE_CLIENT
+    size_t i;
+    for(i = 0; i < lib::size(settings.server); ++i) {
+      if(!lib::isSet(IPAddress(settings.server[i].ip))) break;
       out.print(F("Server["));
       out.print(i);
       out.print(F("] IP Address: "));
@@ -242,6 +243,10 @@ void printSettings(Print& out, bool showPass) {
       out.print(F(", Target: "));
       out.println(settings.server[i].target);
     }
+    send_loop.interval = (i == 0) ? settings.send_interval : settings.send_interval / i;
+    out.print(F("Delay between sendings: "));
+    out.print(send_loop.interval);
+    out.println(F(" ms"));
   #endif
 }
 
@@ -280,7 +285,7 @@ void WiFiGotIP(const lib::WiFiEventStationModeGotIP& event) {
   Serial.println(event.mask);
   Serial.print(F("Gateway IP Address: "));
   Serial.println(event.gw);
-  digitalWrite(PIN_NET, LED_ON);
+  digitalWrite(PIN_LED, LED_ON);
 }
 
 void WiFiStationDisconnected(const lib::WiFiEventStationModeDisconnected& event) {
@@ -289,7 +294,7 @@ void WiFiStationDisconnected(const lib::WiFiEventStationModeDisconnected& event)
   Serial.print(F("Disconnected from wifi for the following reason: Error -> "));
   Serial.println(event.reason);
   reconnectWiFi();
-  digitalWrite(PIN_NET, LED_OFF);
+  digitalWrite(PIN_LED, LED_OFF);
 }
 
 lib::WiFiEventHandler hSMConnected, hSMGotIP, hSMDisconnected;
@@ -305,8 +310,8 @@ void disconnectWiFi() {
 
 void setup() {
   disconnectWiFi();
-  pinMode(PIN_NET, OUTPUT);
-  digitalWrite(PIN_NET, LED_OFF);
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LED_OFF);
   Serial.begin(115200);
   delay(1000);
   #ifndef ESP32
@@ -344,17 +349,14 @@ void setup() {
   #else
     for(size_t i = 0; i < lib::size(PIN_IN); i++) {
       pinMode(PIN_IN[i], INPUT_PULLUP);
-      old_state[i] = VALUE_PIN_HIGH;
+      send_loop.old_state[i] = VALUE_PIN_HIGH;
     }
-    size_t count = 0;
-    while(count < lib::size(settings.server)) {
-      if(!lib::isSet(IPAddress(settings.server[count].ip)))
-        break;
-      ++count;
+    size_t i;
+    for(i = 0; i < lib::size(settings.server); ++i) {
+      if(!lib::isSet(IPAddress(settings.server[i].ip))) break;
     }
-    ++count;
-    client_data.send_interval = settings.send_interval / count;
-    client_data.last_send = millis();
+    send_loop.interval = (i == 0) ? settings.send_interval : settings.send_interval / i;
+    send_loop.stored_time = millis();
   #endif
 }
 
@@ -593,6 +595,25 @@ bool execQuery(char query, Print& out) {
   if((query == 'I') || (query == 'i')) {
     printSettings(out, false);
     return true;
+  } else if(query == '+') {
+    if(WiFi.isConnected()) {
+      out.print(F("Network Name (SSID): "));
+      out.println(WiFi.SSID());
+      out.print(F("WiFi Channel = "));
+      out.print(WiFi.channel());
+      out.print(F(", Signal = "));
+      out.print(WiFi.RSSI());
+      out.println(F(" dbm"));
+      out.print(F("Local IP Address: "));
+      out.println(WiFi.localIP());
+      out.print(F("Subnet Mask: "));
+      out.println(WiFi.subnetMask());
+      out.print(F("Gateway IP Address: "));
+      out.println(WiFi.gatewayIP());
+    } else {
+      out.println(F("WiFi Signal = <NOT CONNECTED>"));
+    }
+    return true;
   } else if((query == 'W') || (query == 'w')) {
     if(WiFi.isConnected()) {
       out.print(F("WiFi Signal = "));
@@ -656,40 +677,39 @@ void loop() {
     parsePacket();
     #ifdef MODE_CLIENT
       millis_t current_time = millis();
-      if(current_time - client_data.last_send > client_data.send_interval) {
+      if(current_time - send_loop.stored_time > send_loop.interval) {
         pkt_s pkt;
-        //for(size_t i = 0; i < lib::size(settings.server); ++i) {
-        if(lib::isSet(IPAddress(settings.server[client_data.count].ip))) {
+        if(lib::isSet(IPAddress(settings.server[send_loop.index].ip))) {
           memset(&pkt, 0, sizeof(pkt_s));
           pkt.magic = settings.magic;
-          pkt.idx = settings.server[client_data.count].target;
-          pkt.value = digitalRead(PIN_IN[client_data.count]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
-          if(pkt.value != old_state[client_data.count]) {
+          pkt.idx = settings.server[send_loop.index].target;
+          pkt.value = digitalRead(PIN_IN[send_loop.index]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
+          if(pkt.value != send_loop.old_state[send_loop.index]) {
             apply_new_row();
             Serial.print(F("Changed swich["));
-            Serial.print(client_data.count);
+            Serial.print(send_loop.index);
             Serial.print(F("] state to "));
             if(pkt.value == SWICH_CLOSED) {
               Serial.println(F("closed"));
             } else {
               Serial.println(F("open"));
             }
-            old_state[client_data.count] = pkt.value;
+            send_loop.old_state[send_loop.index] = pkt.value;
           }
-          udp.beginPacket(settings.server[client_data.count].ip, settings.server[client_data.count].port);
+          udp.beginPacket(settings.server[send_loop.index].ip, settings.server[send_loop.index].port);
           lib::writeT(udp, &pkt);
           udp.endPacket();
-          ++client_data.count;
-          if(client_data.count >= lib::size(settings.server))
-            client_data.count = 0;
+          ++send_loop.index;
+          if(send_loop.index >= lib::size(settings.server))
+            send_loop.index = 0;
         } else {
-          client_data.count = 0;
+          send_loop.index = 0;
         }
         if(show_polling) {
           Serial.print(F("."));
           need_new_row = true;
         }
-        client_data.last_send = current_time;
+        send_loop.stored_time = current_time;
       }
     #endif
   }
