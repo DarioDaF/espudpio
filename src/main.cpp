@@ -677,7 +677,7 @@ bool execQuery(char query, Print& out) {
     // Prepare packet
     pkt_s pkt;
     memset(&pkt, 0, sizeof(pkt_s));
-    pkt.magic = settings.magic;
+    pkt.magic = PKT_MAGIC;
     pkt.idx = settings.server[send_loop.index].target;
     pkt.value = digitalRead(PIN_IN[send_loop.index]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
 
