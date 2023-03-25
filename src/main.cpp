@@ -111,13 +111,13 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
     { D0, D1, D2, D5, D6, D7, D8 }
   #endif
   ;
-  #define MIN_INTERVAL_VALUE (millis_t)500
+  #define MIN_INTERVAL_VALUE ((millis_t)500)
 #else
   #define VALUE_PIN_HIGH 0x00
   #define VALUE_PIN_LOW 0xFF
   #define SWICH_OPEN VALUE_PIN_HIGH
   #define SWICH_CLOSED VALUE_PIN_LOW
-  #define MIN_INTERVAL_VALUE (millis_t)50
+  #define MIN_INTERVAL_VALUE ((millis_t)50)
   #ifdef ESP32
     const int PIN_IN[] = { 13 };
   #else
@@ -125,9 +125,12 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
   #endif
   struct send_loop_s {
     uint8_t old_state[lib::size(PIN_IN)];
+
+    uint16_t count = 0;
+    millis_t interval = 0;
+
     uint16_t index = 0;
     millis_t stored_time = 0;
-    millis_t interval = 0;
   } send_loop;
 #endif
 
@@ -139,19 +142,24 @@ hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
   const int PIN_LED = D4;
 #endif
 
-#define IP_NONE { 0, 0, 0, 0 }
 #define PORT_NONE 0
 #define TARGET_NONE 0
 struct __attribute__((packed)) server_s {
-  uint8_t ip[4] = IP_NONE;
+  uint8_t ip[4] = IP_ZERO;
   uint16_t port = PORT_NONE;
   uint16_t target = TARGET_NONE;
 };
 
 #include <defSettings.hpp>
-#define EE_MAGIC 0xDF01
+#define EE_MAGIC 0xDF02
+#ifdef MODE_SERVER
+  #define EE_MODE 'S'
+#else
+  #define EE_MODE 'C'
+#endif
 struct __attribute__((packed)) settings_s {
   uint16_t magic = EE_MAGIC;
+  char mode = EE_MODE;
   uint16_t local_id = 0;
   char ssid[64] = DEFSETTINGS_SSID;
   char pass[64] = DEFSETTINGS_PASS;
@@ -159,7 +167,7 @@ struct __attribute__((packed)) settings_s {
   #ifdef MODE_SERVER
     DEFSETTINGS_SERVER_IP
   #else
-    IP_NONE
+    IP_ZERO
   #endif
   ;
   uint8_t mask[4] = DEFSETTINGS_MASK_IP;
@@ -229,9 +237,7 @@ void printSettings(Print& out, bool showPass) {
   out.println(F(" ms"));
 
   #ifdef MODE_CLIENT
-    size_t i;
-    for(i = 0; i < lib::size(settings.server); ++i) {
-      if(!lib::isSet(IPAddress(settings.server[i].ip))) break;
+    for(uint16_t i = 0; i < send_loop.count; ++i) {
       out.print(F("Server["));
       out.print(i);
       out.print(F("] IP Address: "));
@@ -243,10 +249,18 @@ void printSettings(Print& out, bool showPass) {
       out.print(F(", Target: "));
       out.println(settings.server[i].target);
     }
-    send_loop.interval = (i == 0) ? settings.send_interval : settings.send_interval / i;
     out.print(F("Delay between sendings: "));
     out.print(send_loop.interval);
     out.println(F(" ms"));
+  #endif
+}
+
+void settingsChanged() {
+  #ifdef MODE_CLIENT
+    for(send_loop.count = 0; send_loop.count < lib::size(settings.server); ++send_loop.count)
+      if(!lib::isSet(IPAddress(settings.server[send_loop.count].ip)))
+        break;
+    send_loop.interval = (send_loop.count == 0) ? settings.send_interval : settings.send_interval / send_loop.count;
   #endif
 }
 
@@ -320,12 +334,13 @@ void setup() {
   Serial.println();
   EEPROM.begin(512);
   EEPROM.get(0, settings);
-  if(settings.magic != EE_MAGIC) {
+  if((settings.magic != EE_MAGIC) || (settings.mode != EE_MODE)) {
     // Invalid settings
     Serial.println(F("Invalid settings in EEPROM"));
     //settings = {};
     settings = settings_s();
   }
+  settingsChanged();
   printSettings(Serial, false);
   
   Serial.println();
@@ -351,12 +366,6 @@ void setup() {
       pinMode(PIN_IN[i], INPUT_PULLUP);
       send_loop.old_state[i] = VALUE_PIN_HIGH;
     }
-    size_t i;
-    for(i = 0; i < lib::size(settings.server); ++i) {
-      if(!lib::isSet(IPAddress(settings.server[i].ip))) break;
-    }
-    send_loop.interval = (i == 0) ? settings.send_interval : settings.send_interval / i;
-    send_loop.stored_time = millis();
   #endif
 }
 
@@ -544,7 +553,7 @@ void readSettings() {
   settings.send_interval = max(settings.send_interval, MIN_INTERVAL_VALUE);
 
   #ifdef MODE_CLIENT
-    for(size_t i = 0; i < lib::size(settings.server); ++i) {
+    for(uint16_t i = 0; i < lib::size(settings.server); ++i) {
       Serial.print(F("Server["));
       Serial.print(i);
       Serial.print(F("] IP Address: "));
@@ -563,6 +572,8 @@ void readSettings() {
       settings.server[i].target = serialReadLine().toInt();
     }
   #endif
+
+  settingsChanged();
 
   Serial.println();
   printSettings(Serial, true);
@@ -592,7 +603,7 @@ void readSettings() {
 }
 
 bool execQuery(char query, Print& out) {
-  if((query == 'I') || (query == 'i')) {
+  if(query == 'I') {
     printSettings(out, false);
     return true;
   } else if(query == '+') {
@@ -611,10 +622,10 @@ bool execQuery(char query, Print& out) {
       out.print(F("Gateway IP Address: "));
       out.println(WiFi.gatewayIP());
     } else {
-      out.println(F("WiFi Signal = <NOT CONNECTED>"));
+      out.println(F("WiFi <NOT CONNECTED>"));
     }
     return true;
-  } else if((query == 'W') || (query == 'w')) {
+  } else if(query == 'W') {
     if(WiFi.isConnected()) {
       out.print(F("WiFi Signal = "));
       out.print(WiFi.RSSI());
@@ -625,13 +636,13 @@ bool execQuery(char query, Print& out) {
     return true;
   }
   #ifdef MODE_SERVER
-    else if((query == 'C') || (query == 'c')) {
+    else if(query == 'C') {
       out.println(F("Clients connected:"));
       for (const auto& kv : track_last_received) {
         out.println(kv.first);
       }
       return true;
-    } else if((query == 'O') || (query == 'o')) {
+    } else if(query == 'O') {
       out.print(F("Outputs: [ "));
       bool first = true;
       for (const auto& pin : PIN_OUT) {
@@ -649,18 +660,67 @@ bool execQuery(char query, Print& out) {
   return false;
 }
 
+#ifdef MODE_CLIENT
+
+  void packetSendLoop() {
+    millis_t current_time = millis();
+    if(current_time - send_loop.stored_time < send_loop.interval)
+      return; // Not time yet
+
+    if(send_loop.index >= send_loop.count) {
+      // Either no server or broken internal send_loop?
+      send_loop.index = 0;
+      send_loop.stored_time = current_time; // Update time anyway so you don't get this every frame
+      return;
+    }
+
+    // Prepare packet
+    pkt_s pkt;
+    memset(&pkt, 0, sizeof(pkt_s));
+    pkt.magic = settings.magic;
+    pkt.idx = settings.server[send_loop.index].target;
+    pkt.value = digitalRead(PIN_IN[send_loop.index]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
+
+    // Print if state changed
+    if(pkt.value != send_loop.old_state[send_loop.index]) {
+      apply_new_row();
+      Serial.print(F("Changed swich["));
+      Serial.print(send_loop.index);
+      Serial.print(F("] state to "));
+      Serial.println((pkt.value == SWICH_CLOSED) ? F("closed") : F("open"));
+      send_loop.old_state[send_loop.index] = pkt.value;
+    }
+
+    // Send packet
+    udp.beginPacket(settings.server[send_loop.index].ip, settings.server[send_loop.index].port);
+    lib::writeT(udp, &pkt);
+    udp.endPacket();
+
+    ++send_loop.index;
+    if(send_loop.index >= send_loop.count)
+      send_loop.index = 0;
+
+    if(show_polling) {
+      Serial.print(F("."));
+      need_new_row = true;
+    }
+    send_loop.stored_time = current_time;
+  }
+
+#endif
+
 void loop() {
   yield();
   if(Serial.available()) {
-    char query = Serial.read();
-    if((query == 'S') || (query == 's')) {
+    char query = toupper(Serial.read());
+    if(query == 'S') {
       apply_new_row();
       disconnectWiFi(); // Disable wifi and hooks to avoid messages
       askSettings(); // noreturn
-    } else if((query == 'R') || (query == 'r')) {
+    } else if(query == 'R') {
       apply_new_row();
       reboot(); // noreturn
-    } else if((query == 'D') || (query == 'd')) {
+    } else if(query == 'D') {
       show_polling = !show_polling;
     } else {
       apply_new_row();
@@ -675,42 +735,9 @@ void loop() {
   #endif
   if(WiFiConnected) {
     parsePacket();
+
     #ifdef MODE_CLIENT
-      millis_t current_time = millis();
-      if(current_time - send_loop.stored_time > send_loop.interval) {
-        pkt_s pkt;
-        if(lib::isSet(IPAddress(settings.server[send_loop.index].ip))) {
-          memset(&pkt, 0, sizeof(pkt_s));
-          pkt.magic = settings.magic;
-          pkt.idx = settings.server[send_loop.index].target;
-          pkt.value = digitalRead(PIN_IN[send_loop.index]) ? VALUE_PIN_HIGH : VALUE_PIN_LOW;
-          if(pkt.value != send_loop.old_state[send_loop.index]) {
-            apply_new_row();
-            Serial.print(F("Changed swich["));
-            Serial.print(send_loop.index);
-            Serial.print(F("] state to "));
-            if(pkt.value == SWICH_CLOSED) {
-              Serial.println(F("closed"));
-            } else {
-              Serial.println(F("open"));
-            }
-            send_loop.old_state[send_loop.index] = pkt.value;
-          }
-          udp.beginPacket(settings.server[send_loop.index].ip, settings.server[send_loop.index].port);
-          lib::writeT(udp, &pkt);
-          udp.endPacket();
-          ++send_loop.index;
-          if(send_loop.index >= lib::size(settings.server))
-            send_loop.index = 0;
-        } else {
-          send_loop.index = 0;
-        }
-        if(show_polling) {
-          Serial.print(F("."));
-          need_new_row = true;
-        }
-        send_loop.stored_time = current_time;
-      }
+      packetSendLoop();
     #endif
   }
 }

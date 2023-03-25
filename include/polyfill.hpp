@@ -7,6 +7,10 @@
   #include <ESP8266WiFi.h>
 #endif
 
+
+// Can't contexpr because IPAddress doesn't have a constexpr constructor
+#define IP_ZERO { 0, 0, 0, 0 }
+
 namespace lib {
     // General use
     #ifdef ESP32
@@ -82,7 +86,7 @@ namespace lib {
 
     inline bool isSet(const IPAddress& ip) {
         #ifdef ESP32
-            return ip != INADDR_NONE;
+            return ip != IPAddress IP_ZERO;
         #else
             return ip.isSet();
         #endif
