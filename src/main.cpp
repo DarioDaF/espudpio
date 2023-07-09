@@ -8,6 +8,8 @@
 #include <WiFiUdp.h>
 #include <EEPROM.h>
 
+#include <string>
+
 #include <polyfill.hpp>
 
 #if defined(MODE_CLIENT) ^ defined(MODE_SERVER) == 0
@@ -15,7 +17,7 @@
 #endif
 
 using millis_t = unsigned long;
-
+   
 struct IPPort : public Printable {
   
   IPAddress ip;
@@ -40,7 +42,7 @@ struct IPPort : public Printable {
 };
 
 #ifdef MODE_SERVER
-
+ 
   void apply_new_row();
 
   #include <map>
@@ -77,8 +79,21 @@ struct IPPort : public Printable {
     }
     return expire_count;
   }
-
 #endif
+
+String strfmt(const char* fmt, ...)
+{
+  va_list args;
+  va_start(args, fmt);
+
+  int char_needed = vsnprintf(nullptr, 0, fmt, args) + 1;
+  char* result = (char*)malloc(char_needed);
+  vsnprintf(result, char_needed, fmt, args);
+
+  va_end(args);
+
+  return result;
+}
 
 // esp32 PINOUT
 /*
@@ -101,14 +116,32 @@ vspi = (19 = miso, 23 = mosi, 18 = sck, 5 = cs)
 hspi = (12 = miso, 13 = mosi, 14 = sck, 15 = cs)
 */
 
+struct PinData
+{
+public:
+  int pin;
+  millis_t last_modified;
+
+  PinData(int _pin)
+    : pin(_pin), last_modified(0) { }
+};
+
 // Used configs
 #ifdef MODE_SERVER
-  const int PIN_OUT[] =
+  PinData PIN_OUT[] =
   #ifdef ESP32
     //{ 4, 16, 17, 18, 19, 23, 13, 27, 26, 25, 33, 32 }
-    { 33, 32, 4, 16, 17, 18, 19, 21, 22, 23 }
+    { PinData(33), PinData(32),
+      PinData(4) , PinData(16),
+      PinData(17), PinData(18),
+      PinData(19), PinData(21),
+      PinData(22), PinData(23) }
+
   #else
-    { D0, D1, D2, D5, D6, D7, D8 }
+    { PinData(D0), PinData(D1),
+      PinData(D2), PinData(D5),
+      PinData(D6), PinData(D7),
+      PinData(D8) }
   #endif
   ;
   #define MIN_INTERVAL_VALUE ((millis_t)500)
@@ -173,6 +206,7 @@ struct __attribute__((packed)) settings_s {
   uint8_t mask[4] = DEFSETTINGS_MASK_IP;
   uint8_t gateway[4] = DEFSETTINGS_GATEWAY_IP;
   uint16_t udp_server_port = DEFSETTINGS_SERVER_PORT;
+  
   unsigned long send_interval = 
   #ifdef MODE_SERVER
     1000UL
@@ -182,6 +216,8 @@ struct __attribute__((packed)) settings_s {
   ;
   #ifdef MODE_CLIENT
     server_s server[lib::size(PIN_IN)];
+  #else
+    millis_t pin_timeouts[lib::size(PIN_OUT)] {0};
   #endif
 };
 
@@ -203,7 +239,7 @@ void printSettings(Print& out, bool showPass) {
     out.println(F("[CLIENT MODE]"));
   #endif
 
-  out.print(F("Node Id: "));
+  out.print(F("Id Number: "));
   out.println(settings.node_id);
 
   out.print(F("Network Name (SSID): "));
@@ -229,7 +265,7 @@ void printSettings(Print& out, bool showPass) {
   out.println(settings.udp_server_port);
 
   #ifdef MODE_SERVER
-    out.print(F("Expire Interval: "));
+    out.print(F("Client Expiry: "));
   #else
     out.print(F("Send Interval: "));
   #endif
@@ -252,6 +288,21 @@ void printSettings(Print& out, bool showPass) {
     out.print(F("Delay between sendings: "));
     out.print(send_loop.interval);
     out.println(F(" ms"));
+  #endif
+  #ifdef MODE_SERVER
+    for (size_t i = 0; i < lib::size(settings.pin_timeouts); i++) {
+      out.print(F("Output["));
+      out.print(i);
+      out.print(F("]->Pin("));
+      out.print(strfmt("%02d", PIN_OUT[i].pin));
+      out.print(F(") Timeout: "));
+      if(settings.pin_timeouts[i]) {
+        out.print(settings.pin_timeouts[i]);
+        out.println(F(" ms"));
+      } else {  
+        out.println(F("Undefined"));
+      }
+    }
   #endif
 }
 
@@ -279,6 +330,9 @@ void reconnectWiFi() {
     WiFi.config(LOCAL_IP, settings.gateway, settings.mask);
   }
   WiFi.begin(settings.ssid, settings.pass);
+  #ifdef MODE_CLIENT
+    send_loop.stored_time = millis();
+  #endif
 }
 
 void WiFiStationConnected(const lib::WiFiEventStationModeConnected& event) {
@@ -323,6 +377,7 @@ void disconnectWiFi() {
 }
 
 void setup() {
+  //wdt_disable();
   disconnectWiFi();
   pinMode(PIN_LED, OUTPUT);
   digitalWrite(PIN_LED, LED_OFF);
@@ -357,9 +412,9 @@ void setup() {
 
   // Prepare pins
   #ifdef MODE_SERVER
-    for(const int pin : PIN_OUT) {
-      pinMode(pin, OUTPUT);
-      digitalWrite(pin, LOW);
+    for(const auto& pin_data : PIN_OUT) {
+      pinMode(pin_data.pin, OUTPUT);
+      digitalWrite(pin_data.pin, LOW);
     }
   #else
     for(size_t i = 0; i < lib::size(PIN_IN); i++) {
@@ -428,11 +483,17 @@ bool parseQueryPacket() {
       return false;
     }
 
-    track_received(pkt_source, millis());
+    millis_t time = millis();
+    track_received(pkt_source, time);
 
-    bool prev_state = digitalRead(PIN_OUT[pkt->idx]);
-    digitalWrite(PIN_OUT[pkt->idx], pkt->value ? HIGH : LOW);
-    bool new_state = digitalRead(PIN_OUT[pkt->idx]);
+    PinData& pin_data = PIN_OUT[pkt->idx];
+
+    bool prev_state = digitalRead(pin_data.pin);
+    
+    digitalWrite(pin_data.pin, pkt->value ? HIGH : LOW);
+    pin_data.last_modified = time;
+
+    bool new_state = digitalRead(pin_data.pin);
     if(prev_state != new_state) {
       apply_new_row();
       Serial.print(F("Changed value of output "));
@@ -520,7 +581,7 @@ void readSettings() {
   settings.mode = _def.mode;
   Serial.println();
 
-  Serial.print(F("Node Id: "));
+  Serial.print(F("Id Number: "));
   settings.node_id = serialReadLine().toInt();
 
   Serial.print(F("Network Name (SSID): "));
@@ -543,8 +604,9 @@ void readSettings() {
   Serial.print(F("Local Port: "));
   settings.udp_server_port = serialReadLine().toInt();
 
+  
   #ifdef MODE_SERVER
-    Serial.print(F("Expire Interval: "));
+    Serial.print(F("Client Expiry: "));
   #else
     Serial.print(F("Send Interval: "));
   #endif
@@ -571,7 +633,21 @@ void readSettings() {
       settings.server[i].target = serialReadLine().toInt();
     }
   #endif
-
+  #ifdef MODE_SERVER
+    for (size_t i = 0; i < lib::size(settings.pin_timeouts); i++) {
+      Serial.print(F("Output["));
+      Serial.print(i);
+      Serial.print(F("]->Pin("));
+      Serial.print(strfmt("%02d", PIN_OUT[i].pin));
+      Serial.print(F(") Timeout: "));
+      int timeout = serialReadLine().toInt();
+      if(timeout < 0) {
+        Serial.println(F("Invalid timeout provided, exiting pin timeout config."));  
+        break;
+      }
+      settings.pin_timeouts[i] = timeout;
+    }
+  #endif
   settingsChanged();
 
   Serial.println();
@@ -645,13 +721,13 @@ bool execQuery(char query, Print& out) {
     } else if(query == 'O') {
       out.print(F("Outputs: [ "));
       bool first = true;
-      for (const auto& pin : PIN_OUT) {
+      for (const auto& pin_data : PIN_OUT) {
         if(first) {
           first = false;
         } else {
           out.print(F(", "));
         }
-        out.print(digitalRead(pin) ? F("H") : F("L"));
+        out.print(digitalRead(pin_data.pin) ? F("H") : F("L"));
       }
       out.println(F(" ]"));
       return true;
@@ -707,6 +783,24 @@ bool execQuery(char query, Print& out) {
     send_loop.stored_time = current_time;
   }
 
+#else
+
+  void turn_off_timedout_pins(millis_t time) {
+    assert(lib::size(PIN_OUT) == lib::size(settings.pin_timeouts));
+    for(size_t i = 0; i < lib::size(PIN_OUT); i++) {
+      if(settings.pin_timeouts[i] == 0)
+        continue;
+      
+      const auto& pin_data = PIN_OUT[i];
+      if(digitalRead(pin_data.pin) && (time - pin_data.last_modified > settings.pin_timeouts[i])) {
+        digitalWrite(pin_data.pin, LOW);
+        Serial.print(F("Changed value of output "));
+        Serial.print(i);
+        Serial.println(F(" to LOW for timeout"));
+      }
+    }
+  }
+
 #endif
 
 void loop() {
@@ -731,7 +825,9 @@ void loop() {
     }
   }
   #ifdef MODE_SERVER
-    track_older(millis(), settings.send_interval); // Could be done less frequently
+    millis_t time = millis();
+    track_older(time, settings.send_interval); // Could be done less frequently
+    turn_off_timedout_pins(time);
   #endif
   if(WiFiConnected) {
     parsePacket();

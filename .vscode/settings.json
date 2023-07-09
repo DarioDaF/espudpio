@@ -13,6 +13,7 @@
         "bit": "cpp",
         "*.tcc": "cpp",
         "cctype": "cpp",
+        "chrono": "cpp",
         "clocale": "cpp",
         "cmath": "cpp",
         "compare": "cpp",
@@ -23,6 +24,7 @@
         "cstdio": "cpp",
         "cstdlib": "cpp",
         "cstring": "cpp",
+        "ctime": "cpp",
         "cwchar": "cpp",
         "cwctype": "cpp",
         "map": "cpp",
@@ -36,6 +38,7 @@
         "numeric": "cpp",
         "optional": "cpp",
         "random": "cpp",
+        "ratio": "cpp",
         "system_error": "cpp",
         "tuple": "cpp",
         "type_traits": "cpp",
@@ -48,12 +51,6 @@
         "streambuf": "cpp",
         "cinttypes": "cpp",
         "typeinfo": "cpp",
-        "ctime": "cpp",
-        "unordered_set": "cpp",
-        "fstream": "cpp",
-        "iomanip": "cpp",
-        "istream": "cpp",
-        "sstream": "cpp",
-        "*.base": "cpp"
+        "variant": "cpp"
     }
 }
